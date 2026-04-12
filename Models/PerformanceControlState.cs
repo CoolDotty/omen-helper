@@ -14,6 +14,20 @@ internal sealed class PerformanceControlState
 
     public string CurrentLegacyFanMode { get; set; }
 
+    public string CurrentGraphicsMode { get; set; }
+
+    public bool GraphicsSupportsUma { get; set; }
+
+    public bool GraphicsSupportsHybrid { get; set; }
+
+    public bool GraphicsSupportsDiscrete { get; set; }
+
+    public bool GraphicsNeedsReboot { get; set; }
+
+    public string LastGraphicsRequestMode { get; set; }
+
+    public int? LastGraphicsRequestReturnCode { get; set; }
+
     public bool ExtremeUnlocked { get; set; }
 
     public bool UnleashVisible { get; set; }

@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 using Hp.Bridge.Client.SDKs.PerformanceControl.Enums;
+using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
 using HP.Omen.Core.Model.DataStructure.Modules.FanControl.Enums;
 using OmenHelper.Models;
 using OmenHelper.Services;
@@ -17,10 +18,16 @@ internal sealed class MainForm : Form
     private readonly Label _statusLabel = new Label();
     private readonly Label _cpuLabel = new Label();
     private readonly Label _gpuLabel = new Label();
+    private readonly Label _graphicsLabel = new Label();
+    private readonly Label _graphicsModeNoteLabel = new Label();
     private readonly ComboBox _thermalModeCombo = new ComboBox();
     private readonly ComboBox _fanModeCombo = new ComboBox();
     private readonly TextBox _logTextBox = new TextBox();
     private readonly Dictionary<PerformanceMode, Button> _modeButtons = new Dictionary<PerformanceMode, Button>();
+    private Button _integratedButton;
+    private Button _hybridButton;
+    private Button _discreteButton;
+    private DiagnosticsForm _diagnosticsForm;
 
     public MainForm()
     {
@@ -90,16 +97,19 @@ internal sealed class MainForm : Form
         TableLayoutPanel controlsRow = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            ColumnCount = 3,
+            ColumnCount = 2,
+            RowCount = 2,
             AutoSize = true
         };
-        controlsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));
-        controlsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));
-        controlsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F));
+        controlsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+        controlsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+        controlsRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        controlsRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         controlsRow.Controls.Add(BuildThermalGroup(), 0, 0);
         controlsRow.Controls.Add(BuildFanGroup(), 1, 0);
-        controlsRow.Controls.Add(BuildActionGroup(), 2, 0);
+        controlsRow.Controls.Add(BuildGraphicsGroup(), 0, 1);
+        controlsRow.Controls.Add(BuildActionGroup(), 1, 1);
 
         GroupBox telemetryGroup = new GroupBox
         {
@@ -118,10 +128,13 @@ internal sealed class MainForm : Form
         };
         _cpuLabel.AutoSize = true;
         _gpuLabel.AutoSize = true;
+        _graphicsLabel.AutoSize = true;
         _cpuLabel.Text = "CPU: waiting for monitor registration";
         _gpuLabel.Text = "GPU: waiting for monitor registration";
+        _graphicsLabel.Text = "Graphics: reading current mode";
         telemetryPanel.Controls.Add(_cpuLabel, 0, 0);
         telemetryPanel.Controls.Add(_gpuLabel, 0, 1);
+        telemetryPanel.Controls.Add(_graphicsLabel, 0, 2);
         telemetryGroup.Controls.Add(telemetryPanel);
 
         GroupBox logGroup = new GroupBox
@@ -156,6 +169,7 @@ internal sealed class MainForm : Form
         {
             Text = "Thermal Mode",
             Dock = DockStyle.Fill,
+            AutoSize = true,
             Padding = new Padding(12),
             Margin = new Padding(0, 0, 12, 12)
         };
@@ -192,6 +206,7 @@ internal sealed class MainForm : Form
         {
             Text = "Legacy Fan Mode",
             Dock = DockStyle.Fill,
+            AutoSize = true,
             Padding = new Padding(12),
             Margin = new Padding(0, 0, 12, 12)
         };
@@ -234,6 +249,7 @@ internal sealed class MainForm : Form
         {
             Text = "Actions",
             Dock = DockStyle.Fill,
+            AutoSize = true,
             Padding = new Padding(12),
             Margin = new Padding(0, 0, 0, 12)
         };
@@ -253,6 +269,11 @@ internal sealed class MainForm : Form
             Text = "Open Notes",
             AutoSize = true
         };
+        Button diagnosticsButton = new Button
+        {
+            Text = "Open Diagnostics",
+            AutoSize = true
+        };
         notesButton.Click += (_, __) =>
         {
             Process.Start(new ProcessStartInfo
@@ -261,10 +282,68 @@ internal sealed class MainForm : Form
                 UseShellExecute = true
             });
         };
+        diagnosticsButton.Click += (_, __) => ShowDiagnosticsWindow();
         actionPanel.Controls.Add(refreshButton);
         actionPanel.Controls.Add(notesButton);
+        actionPanel.Controls.Add(diagnosticsButton);
         actionGroup.Controls.Add(actionPanel);
         return actionGroup;
+    }
+
+    private GroupBox BuildGraphicsGroup()
+    {
+        GroupBox graphicsGroup = new GroupBox
+        {
+            Text = "Graphics Mode",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            Padding = new Padding(12),
+            Margin = new Padding(0, 0, 12, 12)
+        };
+
+        FlowLayoutPanel graphicsPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false
+        };
+
+        Label noteLabel = new Label
+        {
+            AutoSize = true,
+            Text = "Loading supported graphics modes..."
+        };
+        _graphicsModeNoteLabel.Text = noteLabel.Text;
+        _graphicsModeNoteLabel.AutoSize = true;
+
+        _integratedButton = new Button
+        {
+            Text = "Integrated (UMA)",
+            AutoSize = true
+        };
+        _integratedButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.UMAMode, "Integrated Graphics Only");
+
+        _hybridButton = new Button
+        {
+            Text = "Hybrid",
+            AutoSize = true
+        };
+        _hybridButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.Hybrid, "Hybrid Graphics");
+
+        _discreteButton = new Button
+        {
+            Text = "Discrete",
+            AutoSize = true
+        };
+        _discreteButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.Discrete, "Discrete Graphics");
+
+        graphicsPanel.Controls.Add(_graphicsModeNoteLabel);
+        graphicsPanel.Controls.Add(_integratedButton);
+        graphicsPanel.Controls.Add(_hybridButton);
+        graphicsPanel.Controls.Add(_discreteButton);
+        graphicsGroup.Controls.Add(graphicsPanel);
+        return graphicsGroup;
     }
 
     private void AddModeButton(FlowLayoutPanel panel, PerformanceMode mode, string title)
@@ -290,6 +369,7 @@ internal sealed class MainForm : Form
 
     private void OnFormClosing(object sender, FormClosingEventArgs e)
     {
+        _diagnosticsForm?.Close();
         _controller.Dispose();
     }
 
@@ -305,6 +385,7 @@ internal sealed class MainForm : Form
             "Initialized: " + state.Initialized +
             " | Available: " + state.Available +
             " | Mode: " + state.CurrentMode +
+            " | Graphics: " + state.CurrentGraphicsMode +
             " | Thermal: " + state.CurrentThermalMode +
             " | Legacy Fan: " + state.CurrentLegacyFanMode +
             " | Thermal UI: " + state.ThermalUiType +
@@ -329,6 +410,17 @@ internal sealed class MainForm : Form
         {
             _fanModeCombo.SelectedItem = fanMode;
         }
+
+        _graphicsLabel.Text = "Graphics: " + state.CurrentGraphicsMode;
+        _integratedButton.Visible = state.GraphicsSupportsUma;
+        _hybridButton.Visible = state.GraphicsSupportsHybrid;
+        _discreteButton.Visible = state.GraphicsSupportsDiscrete;
+        UpdateGraphicsButtonState(_integratedButton, "Integrated (UMA)", state.GraphicsSupportsUma, state.CurrentGraphicsMode, GraphicsSwitcherMode.UMAMode);
+        UpdateGraphicsButtonState(_hybridButton, "Hybrid", state.GraphicsSupportsHybrid, state.CurrentGraphicsMode, GraphicsSwitcherMode.Hybrid);
+        UpdateGraphicsButtonState(_discreteButton, "Discrete", state.GraphicsSupportsDiscrete, state.CurrentGraphicsMode, GraphicsSwitcherMode.Discrete);
+        _graphicsModeNoteLabel.Text =
+            "Supported: " + string.Join(", ", BuildSupportedGraphicsModeList(state)) +
+            " | Restart required: " + state.GraphicsNeedsReboot;
     }
 
     private void ControllerOnTelemetryChanged(object sender, TelemetrySnapshot snapshot)
@@ -364,5 +456,77 @@ internal sealed class MainForm : Form
         string temperature = string.IsNullOrWhiteSpace(sample.TemperatureString) ? "--" : sample.TemperatureString;
         string usage = string.IsNullOrWhiteSpace(sample.UsageString) ? "--" : sample.UsageString;
         return temperature + " | " + usage + " | state " + sample.TemperatureState;
+    }
+
+    private static IEnumerable<string> BuildSupportedGraphicsModeList(PerformanceControlState state)
+    {
+        if (state.GraphicsSupportsUma)
+        {
+            yield return "Integrated";
+        }
+
+        if (state.GraphicsSupportsHybrid)
+        {
+            yield return "Hybrid";
+        }
+
+        if (state.GraphicsSupportsDiscrete)
+        {
+            yield return "Discrete";
+        }
+    }
+
+    private static void UpdateGraphicsButtonState(Button button, string title, bool supported, string currentGraphicsMode, GraphicsSwitcherMode representedMode)
+    {
+        bool isCurrent = string.Equals(currentGraphicsMode, representedMode.ToString(), StringComparison.OrdinalIgnoreCase);
+        button.Enabled = supported && !isCurrent;
+        button.BackColor = isCurrent ? Color.LightGreen : SystemColors.Control;
+        button.Text = isCurrent ? title + " (Current)" : title;
+    }
+
+    private void ShowDiagnosticsWindow()
+    {
+        if (_diagnosticsForm != null && !_diagnosticsForm.IsDisposed)
+        {
+            _diagnosticsForm.Focus();
+            return;
+        }
+
+        _diagnosticsForm = new DiagnosticsForm(() => _controller.BuildDiagnosticsReportAsync());
+        _diagnosticsForm.Show(this);
+    }
+
+    private async System.Threading.Tasks.Task ApplyGraphicsModeAsync(GraphicsSwitcherMode mode, string label)
+    {
+        DialogResult result = MessageBox.Show(
+            this,
+            "Apply " + label + " mode? A restart is required for the change to take effect.",
+            "Graphics Mode",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+
+        if (result != DialogResult.Yes)
+        {
+            return;
+        }
+
+        bool success = await _controller.SetGraphicsModeAsync(mode);
+        if (!success)
+        {
+            MessageBox.Show(this, "Failed to request graphics mode change. Check diagnostics or the log for support flags and the BIOS return code.", "Graphics Mode", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        DialogResult restartResult = MessageBox.Show(
+            this,
+            "The graphics mode change was requested. Restart now?",
+            "Graphics Mode",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
+
+        if (restartResult == DialogResult.Yes)
+        {
+            Process.Start("shutdown", "/r /t 0");
+        }
     }
 }

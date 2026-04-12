@@ -1,14 +1,21 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using Hp.Bridge.Client.SDKs.PerformanceControl.Enums;
+using HP.Omen.Core.Common;
 using HP.Omen.Core.Common.Enums;
 using HP.Omen.Core.Common.PipeUtility;
+using HP.Omen.Core.Common.PowerControl;
 using HP.Omen.Core.Common.PowerControl.Enum;
 using HP.Omen.Core.Common.Utilities;
+using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
 using HP.Omen.Core.Model.DataStructure.Modules.FanControl.Enums;
 using HP.Omen.Core.Model.DataStructure.Structs;
 using OmenHelper.Models;
@@ -21,6 +28,8 @@ internal sealed class OmenPerformanceController : IDisposable
 
     private readonly int _sessionId;
     private readonly JavaScriptSerializer _json = new JavaScriptSerializer();
+    private readonly OmenHsaClient _omenHsaClient = new OmenHsaClient();
+    private readonly object _diagnosticsSync = new object();
 
     private PipeClientV2 _controlPipe;
     private PipeServerV3 _stateServer;
@@ -34,12 +43,24 @@ internal sealed class OmenPerformanceController : IDisposable
     private PerformanceMode _currentMode = PerformanceMode.Default;
     private ThermalControl _currentThermalMode = ThermalControl.Auto;
     private FanMode _currentLegacyFanMode = FanMode.Normal;
+    private GraphicsSwitcherMode _currentGraphicsMode = GraphicsSwitcherMode.Unknown;
     private bool _extremeUnlocked;
     private bool _unleashVisible;
     private ThermalModeOnUI _thermalModeUiType;
+    private int _graphicsSupportedModes;
+    private bool _graphicsSupportsUma;
+    private bool _graphicsSupportsHybrid;
+    private bool _graphicsSupportsDiscrete;
+    private bool _graphicsNeedsReboot = true;
+    private string _lastGraphicsRequestMode = string.Empty;
+    private int? _lastGraphicsRequestReturnCode;
     private List<string> _supportModes = new List<string>();
     private PerformanceMonitorSample _cpuSample = new PerformanceMonitorSample();
     private PerformanceMonitorSample _gpuSample = new PerformanceMonitorSample();
+    private string _lastInitializationJson = string.Empty;
+    private string _lastCpuMonitorJson = string.Empty;
+    private string _lastGpuMonitorJson = string.Empty;
+    private readonly Queue<string> _recentEvents = new Queue<string>();
 
     public event EventHandler<PerformanceControlState> StateChanged;
 
@@ -74,12 +95,104 @@ internal sealed class OmenPerformanceController : IDisposable
         _initializationTimer = new Timer(async _ => await RequestInitializationAsync().ConfigureAwait(false), null, 300, InitializationIntervalMs);
         _started = true;
 
+        RefreshGraphicsMode();
+        RefreshGraphicsSupport();
+        RaiseStateChanged();
         Log("Started HP pipe servers. If the OMEN overlay is open, close it so this app can own the plugin return pipe.");
     }
 
     public Task RequestInitializationAsync()
     {
         return SendControlMessageAsync((int)PerformanceControlCmd.Initialization, string.Empty);
+    }
+
+    public async Task<string> BuildDiagnosticsReportAsync()
+    {
+        StringBuilder builder = new StringBuilder();
+
+        builder.AppendLine("Session");
+        builder.AppendLine("  SessionId: " + _sessionId);
+        builder.AppendLine("  Initialized: " + _initialized);
+        builder.AppendLine("  Available: " + _available);
+        builder.AppendLine();
+
+        builder.AppendLine("Current State");
+        builder.AppendLine("  Mode: " + _currentMode);
+        builder.AppendLine("  Thermal: " + _currentThermalMode);
+        builder.AppendLine("  Legacy Fan: " + _currentLegacyFanMode);
+        builder.AppendLine("  Graphics: " + _currentGraphicsMode);
+        builder.AppendLine("  Thermal UI Type: " + _thermalModeUiType);
+        builder.AppendLine("  Extreme Unlocked: " + _extremeUnlocked);
+        builder.AppendLine("  Unleash Visible: " + _unleashVisible);
+        builder.AppendLine("  Support Modes: " + string.Join(", ", _supportModes));
+        builder.AppendLine();
+
+        try
+        {
+            byte[] systemDesignData = _omenHsaClient.SystemDesignData;
+            RefreshGraphicsSupport();
+            builder.AppendLine("BIOS / Platform");
+            builder.AppendLine("  SystemDesignData: " + ((systemDesignData != null && systemDesignData.Length > 0) ? BitConverter.ToString(systemDesignData) : "<empty>"));
+            builder.AppendLine("  ShippingAdapterPowerRating: " + PowerControlHelper.ShippingAdapterPowerRating);
+            builder.AppendLine("  IsBiosPerformanceModeSupport: " + PowerControlHelper.IsBiosPerformanceModeSupport);
+            builder.AppendLine("  IsSwFanControlSupport: " + PowerControlHelper.IsSwFanControlSupport);
+            builder.AppendLine("  IsExtremeModeSupport: " + PowerControlHelper.IsExtremeModeSupport);
+            builder.AppendLine("  IsExtremeModeUnlock: " + PowerControlHelper.IsExtremeModeUnlock);
+            RefreshGraphicsMode();
+            builder.AppendLine("  GraphicsMode: " + _currentGraphicsMode);
+            builder.AppendLine("  GraphicsSupportedModesRaw: " + _graphicsSupportedModes);
+            builder.AppendLine("  GraphicsSupportsHybrid: " + _graphicsSupportsHybrid);
+            builder.AppendLine("  GraphicsSupportsDiscrete: " + _graphicsSupportsDiscrete);
+            builder.AppendLine("  GraphicsSupportsUMA: " + _graphicsSupportsUma);
+            builder.AppendLine("  GraphicsNeedsReboot: " + _graphicsNeedsReboot);
+            builder.AppendLine("  LastGraphicsRequestMode: " + (string.IsNullOrWhiteSpace(_lastGraphicsRequestMode) ? "<none>" : _lastGraphicsRequestMode));
+            builder.AppendLine("  LastGraphicsRequestReturnCode: " + (_lastGraphicsRequestReturnCode.HasValue ? _lastGraphicsRequestReturnCode.Value.ToString() : "<none>"));
+            try
+            {
+                builder.AppendLine("  MaxFan(BIOS): " + await _omenHsaClient.GetMaxFanAsync().ConfigureAwait(false));
+            }
+            catch (Exception ex)
+            {
+                builder.AppendLine("  MaxFan(BIOS): error: " + ex.Message);
+            }
+            builder.AppendLine();
+        }
+        catch (Exception ex)
+        {
+            builder.AppendLine("BIOS / Platform");
+            builder.AppendLine("  error: " + ex.Message);
+            builder.AppendLine();
+        }
+
+        lock (_diagnosticsSync)
+        {
+            builder.AppendLine("Last Initialization Payload");
+            builder.AppendLine(string.IsNullOrWhiteSpace(_lastInitializationJson) ? "<none>" : _lastInitializationJson);
+            builder.AppendLine();
+
+            builder.AppendLine("Last CPU Monitor Payload");
+            builder.AppendLine(string.IsNullOrWhiteSpace(_lastCpuMonitorJson) ? "<none>" : _lastCpuMonitorJson);
+            builder.AppendLine();
+
+            builder.AppendLine("Last GPU Monitor Payload");
+            builder.AppendLine(string.IsNullOrWhiteSpace(_lastGpuMonitorJson) ? "<none>" : _lastGpuMonitorJson);
+            builder.AppendLine();
+
+            builder.AppendLine("Recent Events");
+            if (_recentEvents.Count == 0)
+            {
+                builder.AppendLine("<none>");
+            }
+            else
+            {
+                foreach (string entry in _recentEvents)
+                {
+                    builder.AppendLine(entry);
+                }
+            }
+        }
+
+        return builder.ToString();
     }
 
     public async Task SetPerformanceModeAsync(PerformanceMode mode)
@@ -98,6 +211,42 @@ internal sealed class OmenPerformanceController : IDisposable
     {
         _currentLegacyFanMode = mode;
         await SendControlMessageAsync((int)PerformanceControlCmd.SetLegacyFanModeFromOverlay, mode).ConfigureAwait(false);
+    }
+
+    public async Task<bool> SetGraphicsModeAsync(GraphicsSwitcherMode mode)
+    {
+        try
+        {
+            RefreshGraphicsSupport();
+            _lastGraphicsRequestMode = mode.ToString();
+            _lastGraphicsRequestReturnCode = null;
+
+            if (!IsGraphicsModeSupported(mode))
+            {
+                Log("Graphics mode " + mode + " is not supported on this platform.");
+                RaiseStateChanged();
+                return false;
+            }
+
+            int returnCode = await _omenHsaClient.BiosWmiCmd_Set(2, 82, new byte[4]
+            {
+                Convert.ToByte(mode),
+                0,
+                0,
+                0
+            }).ConfigureAwait(false);
+
+            _lastGraphicsRequestReturnCode = returnCode;
+            Log("Requested graphics mode change to " + mode + ". BIOS return code: " + returnCode + ".");
+            RefreshGraphicsMode();
+            RaiseStateChanged();
+            return returnCode == 0;
+        }
+        catch (Exception ex)
+        {
+            Log("Graphics mode change failed: " + ex.Message);
+            return false;
+        }
     }
 
     private async Task SendControlMessageAsync(int command, object data)
@@ -164,6 +313,8 @@ internal sealed class OmenPerformanceController : IDisposable
                     break;
             }
 
+            RefreshGraphicsMode();
+            TrackEvent("State", "FuncType=" + message.FuncType + ", Payload=" + (message.SendParameter ?? "<null>"));
             RaiseStateChanged();
         }
         catch (Exception ex)
@@ -208,6 +359,11 @@ internal sealed class OmenPerformanceController : IDisposable
         _unleashVisible = _supportModes.Contains(nameof(PerformanceModeOnUI.Unleash));
         _initialized = true;
         _initializationTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        RefreshGraphicsMode();
+        lock (_diagnosticsSync)
+        {
+            _lastInitializationJson = json;
+        }
         Log("Initialization payload received from HP background.");
     }
 
@@ -237,12 +393,21 @@ internal sealed class OmenPerformanceController : IDisposable
             if (message.FuncType == (int)PerformanceMonitorRegisterType.GPU_SIMPLE)
             {
                 _gpuSample = mappedSample;
+                lock (_diagnosticsSync)
+                {
+                    _lastGpuMonitorJson = message.SendParameter as string ?? string.Empty;
+                }
             }
             else if (message.FuncType == (int)PerformanceMonitorRegisterType.CPU_SIMPLE)
             {
                 _cpuSample = mappedSample;
+                lock (_diagnosticsSync)
+                {
+                    _lastCpuMonitorJson = message.SendParameter as string ?? string.Empty;
+                }
             }
 
+            TrackEvent("Monitor", "FuncType=" + message.FuncType + ", Payload=" + (message.SendParameter ?? "<null>"));
             TelemetryChanged?.Invoke(this, new TelemetrySnapshot
             {
                 Cpu = CloneSample(_cpuSample),
@@ -264,6 +429,13 @@ internal sealed class OmenPerformanceController : IDisposable
             CurrentMode = _currentMode.ToString(),
             CurrentThermalMode = _currentThermalMode.ToString(),
             CurrentLegacyFanMode = _currentLegacyFanMode.ToString(),
+            CurrentGraphicsMode = _currentGraphicsMode.ToString(),
+            GraphicsSupportsUma = _graphicsSupportsUma,
+            GraphicsSupportsHybrid = _graphicsSupportsHybrid,
+            GraphicsSupportsDiscrete = _graphicsSupportsDiscrete,
+            GraphicsNeedsReboot = _graphicsNeedsReboot,
+            LastGraphicsRequestMode = _lastGraphicsRequestMode,
+            LastGraphicsRequestReturnCode = _lastGraphicsRequestReturnCode,
             ExtremeUnlocked = _extremeUnlocked,
             UnleashVisible = _unleashVisible,
             ThermalUiType = _thermalModeUiType.ToString(),
@@ -286,10 +458,166 @@ internal sealed class OmenPerformanceController : IDisposable
         return "HP.Omen.Overlay.PerformanceControl.PerformanceMonitor" + _sessionId;
     }
 
+    private void RefreshGraphicsMode()
+    {
+        try
+        {
+            _currentGraphicsMode = _omenHsaClient.GetGraphicsMode();
+        }
+        catch (Exception ex)
+        {
+            Log("Graphics mode read failed: " + ex.Message);
+            _currentGraphicsMode = GraphicsSwitcherMode.Unknown;
+        }
+    }
+
+    private void RefreshGraphicsSupport()
+    {
+        try
+        {
+            Assembly assembly = TryLoadHpAssembly("HP.Omen.Core.Model.Device.dll");
+            Type helperType = assembly?.GetType("HP.Omen.Core.Model.Device.Models.GraphicsSwitcherHelper");
+            Type deviceModelType = assembly?.GetType("HP.Omen.Core.Model.Device.Models.DeviceModel");
+
+            int supportedModes = GetStaticValue<int>(helperType, "SupportedModes", 0);
+            bool supportsUma = GetStaticValue<bool>(helperType, "SupportedUMAmode", false);
+            bool platformAtOrAfter26C1 = InvokeStaticBool(deviceModelType, "IsCurrentPlatformAtOrAfter", "26C1");
+
+            _graphicsSupportedModes = supportedModes;
+            _graphicsSupportsHybrid = (supportedModes & 2) != 0;
+            _graphicsSupportsDiscrete = (supportedModes & 4) != 0;
+            _graphicsSupportsUma = supportsUma;
+            _graphicsNeedsReboot = !platformAtOrAfter26C1;
+        }
+        catch (Exception ex)
+        {
+            Log("Graphics support read failed: " + ex.Message);
+        }
+    }
+
+    private bool IsGraphicsModeSupported(GraphicsSwitcherMode mode)
+    {
+        switch (mode)
+        {
+            case GraphicsSwitcherMode.Hybrid:
+                return _graphicsSupportsHybrid;
+            case GraphicsSwitcherMode.Discrete:
+                return _graphicsSupportsDiscrete;
+            case GraphicsSwitcherMode.UMAMode:
+                return _graphicsSupportsUma;
+            default:
+                return false;
+        }
+    }
+
+    private static Assembly TryLoadHpAssembly(string fileName)
+    {
+        try
+        {
+            string simpleName = Path.GetFileNameWithoutExtension(fileName);
+            return Assembly.Load(simpleName);
+        }
+        catch
+        {
+        }
+
+        string[] searchRoots =
+        {
+            @"C:\Program Files\HP\SystemOptimizer",
+            @"C:\Program Files\HP\Overlay",
+            @"C:\Program Files\WindowsApps"
+        };
+
+        foreach (string root in searchRoots)
+        {
+            if (!Directory.Exists(root))
+            {
+                continue;
+            }
+
+            try
+            {
+                string path = Directory.EnumerateFiles(root, fileName, SearchOption.AllDirectories).FirstOrDefault();
+                if (!string.IsNullOrEmpty(path))
+                {
+                    return Assembly.LoadFrom(path);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return null;
+    }
+
+    private static T GetStaticValue<T>(Type type, string propertyName, T fallback)
+    {
+        try
+        {
+            PropertyInfo property = type?.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static);
+            if (property == null)
+            {
+                return fallback;
+            }
+
+            object value = property.GetValue(null, null);
+            if (value is T typedValue)
+            {
+                return typedValue;
+            }
+
+            if (value != null)
+            {
+                return (T)Convert.ChangeType(value, typeof(T));
+            }
+        }
+        catch
+        {
+        }
+
+        return fallback;
+    }
+
+    private static bool InvokeStaticBool(Type type, string methodName, string argument)
+    {
+        try
+        {
+            MethodInfo method = type?.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
+            if (method == null)
+            {
+                return false;
+            }
+
+            object value = method.Invoke(null, new object[] { argument });
+            if (value is bool result)
+            {
+                return result;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
     private void Log(string message)
     {
         string formatted = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + message;
         LogMessage?.Invoke(this, formatted);
+    }
+
+    private void TrackEvent(string channel, string detail)
+    {
+        lock (_diagnosticsSync)
+        {
+            _recentEvents.Enqueue("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + channel + " " + detail);
+            while (_recentEvents.Count > 20)
+            {
+                _recentEvents.Dequeue();
+            }
+        }
     }
 
     public void Dispose()

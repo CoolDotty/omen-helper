@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("OmenHelper")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e2c06ce8bf6893d352dbf69d628cbd019f5cc08c")]
 [assembly: System.Reflection.AssemblyProductAttribute("OmenHelper")]
 [assembly: System.Reflection.AssemblyTitleAttribute("OmenHelper")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
