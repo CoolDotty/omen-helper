@@ -86,6 +86,14 @@ These can be called directly from our app without OMEN pipes, but require whatev
   - Write: `command=131080, commandType=39, input=[mode]` (`SetMaxFan(...)`)
   - Read: `command=131080, commandType=38`
 
+- **Periodic firmware polling (observed while OEM app is idle)**:
+  - Read 128-byte “status/settings blob” (meaning TBD): `command=131080, commandType=45, input=[0,0,0,0]` (returnDataSize=128)
+    - Observed repeatedly in bursts across multiple threads while OMEN Background is running.
+  - Read 4-byte “temperature-ish” value: `command=131080, commandType=35, input=[0,0,0,0]` (returnDataSize=4)
+    - HP’s `OmenHsaClient.DtGetTemperature()` uses `commandType=35` and reads `return[0]` as the value (but its input byte is `1` in that method; OEM logs often show `0,0,0,0`).
+    - The OEM log often prints `ChangeIrSensorToBoard = False` near these calls, so this may be related to an IR/board temperature source selection on some platforms.
+  - Write 128-byte “restore/apply settings blob” (meaning TBD): `command=131080, commandType=46` (inputDataSize=128, returnDataSize=4)
+
 - **System design data / capability bits**:
   - Read: `command=131080, commandType=40`
   - Cached at: `HKCU\\Software\\HP\\OMEN Ally\\Settings\\SystemDesignData`
