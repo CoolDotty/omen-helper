@@ -7,7 +7,7 @@ Build a small replacement utility for **OMEN Gaming Hub** performance controls o
 ## Goal
 
 - Use **direct firmware/driver control path** (BIOS/WMI) when it is truly available.
-- Use HP background named pipes only when needed, and assume **reply/state channels may be gated**.
+- Do not ship HP background named pipe support in the app.
 - Keep the project safe: only expose controls we can confirm via readback/behavior.
 
 ## What we've reverse engineered so far
@@ -54,44 +54,31 @@ Notes:
 - `returnCode=255` appears to be a generic failure/fallback in HP's `OmenHsaClient` wrappers when the BIOS/WMI command path fails.
 - Hidden platform modes (`Cool`, `Quiet`) exist and show up in BIOS readback even if the current OMEN UI hides them.
 
-#### Important: observed operational reality (Transcend 14, this repo's PoC)
+#### Important: observed operational reality (Transcend 14, current app)
 
-Even though we can observe OMEN BG calling `ExecuteBiosWmiCommandThruDriver(...)` in logs, our standalone PoC cannot currently apply performance/thermal mode changes purely via BIOS/WMI when HP's background stack is not present.
+The shipped app is now BIOS/WMI-only and does not use HP background pipes.
 
 Observed on this machine:
-- HP driver path (`ExecuteBiosWmiCommandThruDriver*`):
-  - returns `executeResult=false` (no driver response), so the BIOS call doesn't execute.
-  - this happened even with `HpReadHWData` installed/running, and even when the app was elevated.
-- "Fusion" WMI/RPC fallback used by `BiosWmiCmd_Set(...)`:
-  - returns `returnCode=255` for these performance/thermal write types.
-- When HP OMEN background performance control is running:
-  - pipe writes can successfully apply mode changes.
-- When HP OMEN background performance control is not running:
-  - both firmware writes and pipe writes fail.
+- BIOS/WMI remains the only supported control path in the app.
+- Performance, thermal, fan, and graphics controls are exposed only when their BIOS readback or behavior can be confirmed.
+- The prior HP pipe path was removed from the application.
 
-Implication: treat BIOS/WMI performance/thermal writes as **best-effort/experimental** until we can prove a reliable non-HP-dependent execution path on this platform.
+Implication: treat BIOS/WMI performance/thermal writes as the only runtime path, and keep the UI conservative when write confirmation is weak.
 
-### B) HP background named pipes (writes work; replies are gated)
+### B) HP background named pipes
 
-This is how the OEM overlay drives performance controls today.
+These are historical reverse-engineering notes only.
 
-- Write pipe: `PerformanceControlFg<SessionId>` (XML; HP `PipeClientV2` / `SerializerXml`)
-  - Observed commands:
-    - `14` = UI launch / enable (seen in HP desktop module; send once before other writes)
-    - `21` = set performance mode (`PerformanceMode` enum; includes `Cool` and `Quiet`)
-    - `23` = set thermal mode (packed as `CurrentPerformanceMode * 1000 + ThermalControl`)
-    - `25` = set legacy fan mode
-    - `29` = request initialization/state
-  - Availability hint: event `Local\OMENCC_PIPE_PerformanceControlFg<SessionId>` is set when the server is up.
+- `PerformanceControlFg<SessionId>` was the performance-control write pipe.
+- OMEN BG used `PipeClientV3` for trusted reply/state channels.
+- HP monitor registration pipes existed for telemetry.
 
-- Why "state return" doesn't work in a standalone app:
-  - OMEN BG sends init/update to overlay/widget pipes using `PipeClientV3`, which verifies the receiver's process signature.
-  - An unsigned app can send writes to the BG, but cannot receive those trusted replies.
+They are no longer part of the app surface.
 
 ### C) Telemetry
 
-- Preferred: `LibreHardwareMonitor` + Windows perf counters (no HP dependencies).
-- HP monitor registration pipes work on this machine, but depend on HP background endpoints being alive.
+- Preferred: `LibreHardwareMonitor` + Windows perf counters.
+- Do not depend on HP monitor registration pipes in the app.
 
 ## Practical workflow / artifacts
 
@@ -104,5 +91,5 @@ This is how the OEM overlay drives performance controls today.
 ## Current project stance
 
 - Prefer firmware paths for **reads** and only expose firmware writes we can confirm via return codes/readback/behavior.
-- Keep the HP pipe path as a pragmatic fallback for performance/thermal changes on Transcend 14, and clearly report "Unavailable" when HP background endpoints are down.
+- Do not keep an HP pipe fallback in the app.
 - Don't rely on `PipeClientV3` reply channels for correctness; build our own readback (BIOS/WMI reads, inferred state, telemetry).
