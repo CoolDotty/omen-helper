@@ -1,3 +1,28 @@
+# Reverse-engineering artifacts
 dlldumps/
-obj/
+
+# Build outputs
 bin/
+obj/
+Debug/
+Release/
+x64/
+x86/
+
+# Visual Studio / Rider
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+_ReSharper*/
+*.DotSettings.user
+
+# NuGet
+packages/
+*.nupkg
+
+# Logs and temp files
+*.log
+*.tmp
+*.cache

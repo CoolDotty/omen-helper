@@ -6,6 +6,7 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>false</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <GenerateResourceUsePreserializedResources>true</GenerateResourceUsePreserializedResources>
     <AssemblyName>OmenHelper</AssemblyName>
     <RootNamespace>OmenHelper</RootNamespace>
   </PropertyGroup>
@@ -24,6 +25,14 @@
       <Private>false</Private>
     </Reference>
     <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Resources.Extensions" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="dlldumps\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>

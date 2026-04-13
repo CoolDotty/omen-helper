@@ -68,7 +68,7 @@ internal sealed class MainForm : Form
         };
 
         _statusLabel.AutoSize = true;
-        _statusLabel.Text = "Waiting for HP background initialization.";
+        _statusLabel.Text = "Initializing firmware state.";
         _statusLabel.Margin = new Padding(0, 0, 0, 12);
 
         GroupBox modeGroup = new GroupBox
@@ -260,7 +260,7 @@ internal sealed class MainForm : Form
         };
         Button refreshButton = new Button
         {
-            Text = "Request State",
+            Text = "Refresh State",
             AutoSize = true
         };
         refreshButton.Click += async (_, __) => await _controller.RequestInitializationAsync();
