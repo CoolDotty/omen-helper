@@ -60,6 +60,11 @@ internal sealed class OmenPerformanceController : IDisposable
     private string _lastInitializationJson = string.Empty;
     private string _lastCpuMonitorJson = string.Empty;
     private string _lastGpuMonitorJson = string.Empty;
+    private string _lastPerformanceRequestMode = string.Empty;
+    private string _lastPerformanceRequestPath = string.Empty;
+    private int? _lastPerfType26ReturnCode;
+    private int? _lastPerfType34ReturnCode;
+    private int? _lastPerfType41ReturnCode;
     private readonly Queue<string> _recentEvents = new Queue<string>();
 
     public event EventHandler<PerformanceControlState> StateChanged;
@@ -121,6 +126,13 @@ internal sealed class OmenPerformanceController : IDisposable
         builder.AppendLine("  Thermal: " + _currentThermalMode);
         builder.AppendLine("  Legacy Fan: " + _currentLegacyFanMode);
         builder.AppendLine("  Graphics: " + _currentGraphicsMode);
+        if (!string.IsNullOrWhiteSpace(_lastPerformanceRequestMode))
+        {
+            builder.AppendLine("  Last Perf Request: " + _lastPerformanceRequestMode + " (" + _lastPerformanceRequestPath + ")");
+            builder.AppendLine("    BIOS 131080/26 rc: " + (_lastPerfType26ReturnCode.HasValue ? _lastPerfType26ReturnCode.Value.ToString() : "<none>"));
+            builder.AppendLine("    BIOS 131080/34 rc: " + (_lastPerfType34ReturnCode.HasValue ? _lastPerfType34ReturnCode.Value.ToString() : "<none>"));
+            builder.AppendLine("    BIOS 131080/41 rc: " + (_lastPerfType41ReturnCode.HasValue ? _lastPerfType41ReturnCode.Value.ToString() : "<none>"));
+        }
         builder.AppendLine("  Thermal UI Type: " + _thermalModeUiType);
         builder.AppendLine("  Extreme Unlocked: " + _extremeUnlocked);
         builder.AppendLine("  Unleash Visible: " + _unleashVisible);
@@ -197,6 +209,21 @@ internal sealed class OmenPerformanceController : IDisposable
 
     public async Task SetPerformanceModeAsync(PerformanceMode mode)
     {
+        _lastPerformanceRequestMode = mode.ToString();
+        _lastPerformanceRequestPath = string.Empty;
+        _lastPerfType26ReturnCode = null;
+        _lastPerfType34ReturnCode = null;
+        _lastPerfType41ReturnCode = null;
+
+        if (await TrySetPerformanceModeFirmwareAsync(mode).ConfigureAwait(false))
+        {
+            _lastPerformanceRequestPath = "Firmware";
+            _currentMode = mode;
+            RaiseStateChanged();
+            return;
+        }
+
+        _lastPerformanceRequestPath = "Pipe";
         _currentMode = mode;
         await SendControlMessageAsync((int)PerformanceControlCmd.SetModeFromOverlay, mode).ConfigureAwait(false);
     }
@@ -281,6 +308,108 @@ internal sealed class OmenPerformanceController : IDisposable
         catch (Exception ex)
         {
             Log("Control send failed: " + ex.Message);
+        }
+    }
+
+    private static bool IsUnleashedMode(PerformanceMode mode)
+    {
+        // On this platform, OMEN labels the mode value 4 as "Unleashed". HP's enum also calls it Extreme/L8.
+        return mode == PerformanceMode.Extreme || (int)mode == 4;
+    }
+
+    private static byte MapPerformanceModeToType26Value(PerformanceMode mode)
+    {
+        // Observed in OMEN background logs (Transcend 14):
+        // - Eco (256) -> 48
+        // - Default/Balanced (0) -> 48
+        // - Performance (1) -> 49
+        // - Unleashed (4) -> 4
+        switch (mode)
+        {
+            case PerformanceMode.Eco:
+            case PerformanceMode.Default:
+                return 48;
+            case PerformanceMode.Performance:
+                return 49;
+            default:
+                return IsUnleashedMode(mode) ? (byte)4 : (byte)0;
+        }
+    }
+
+    private static byte[] MapPerformanceModeToType34Payload(PerformanceMode mode)
+    {
+        // Maps to PowerControlBase.SetTgpPpabAsync(tgpEnable, ppabEnable, dState=1, gps=87) observed in logs.
+        // - Eco:        0,0,1,87
+        // - Default:    0,1,1,87
+        // - Performance 1,1,1,87
+        // - Unleashed:  1,1,1,87
+        bool isEco = mode == PerformanceMode.Eco;
+        bool isPerfLike = mode == PerformanceMode.Performance || IsUnleashedMode(mode);
+
+        byte tgpEnable = isPerfLike ? (byte)1 : (byte)0;
+        byte ppabEnable = isEco ? (byte)0 : (byte)1;
+        byte dState = 1;
+        byte gps = 87;
+        return new[] { tgpEnable, ppabEnable, dState, gps };
+    }
+
+    private async Task<bool> TrySetPerformanceModeFirmwareAsync(PerformanceMode mode)
+    {
+        try
+        {
+            byte type26Value = MapPerformanceModeToType26Value(mode);
+            if (type26Value == 0)
+            {
+                Log("Firmware mode mapping is unknown for " + mode + "; falling back to HP pipe control.");
+                return false;
+            }
+
+            _lastPerfType26ReturnCode = await _omenHsaClient.BiosWmiCmd_Set(131080, 26, new byte[4]
+            {
+                255,
+                type26Value,
+                0,
+                0
+            }).ConfigureAwait(false);
+
+            Log("Firmware SetMode: cmd=131080 type=26 input=[255," + type26Value + ",0,0] rc=" + _lastPerfType26ReturnCode);
+            if (_lastPerfType26ReturnCode != 0)
+            {
+                return false;
+            }
+
+            byte[] type34 = MapPerformanceModeToType34Payload(mode);
+            _lastPerfType34ReturnCode = await _omenHsaClient.BiosWmiCmd_Set(131080, 34, type34).ConfigureAwait(false);
+            Log("Firmware GPU status: cmd=131080 type=34 input=[" + string.Join(",", type34) + "] rc=" + _lastPerfType34ReturnCode);
+            if (_lastPerfType34ReturnCode != 0)
+            {
+                return false;
+            }
+
+            if (mode == PerformanceMode.Performance || IsUnleashedMode(mode))
+            {
+                // Observed OMEN background uses type=41 input=[255,255,255,45] during Performance/Unleashed.
+                _lastPerfType41ReturnCode = await _omenHsaClient.BiosWmiCmd_Set(131080, 41, new byte[4]
+                {
+                    255,
+                    255,
+                    255,
+                    45
+                }).ConfigureAwait(false);
+
+                Log("Firmware TPP/TDP: cmd=131080 type=41 input=[255,255,255,45] rc=" + _lastPerfType41ReturnCode);
+                if (_lastPerfType41ReturnCode != 0)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("Firmware performance mode change failed: " + ex.Message);
+            return false;
         }
     }
 
