@@ -4,19 +4,17 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 using Hp.Bridge.Client.SDKs.PerformanceControl.Enums;
-using HP.Omen.Core.Common;
 using HP.Omen.Core.Common.Enums;
-using HP.Omen.Core.Common.PipeUtility;
 using HP.Omen.Core.Common.PowerControl;
 using HP.Omen.Core.Common.PowerControl.Enum;
 using HP.Omen.Core.Common.Utilities;
-using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
+using HP.Omen.Core.Common.Utilities.SystemAdvPerformanceHelper.CommonUtilities;
 using HP.Omen.Core.Model.DataStructure.Modules.FanControl.Enums;
-using HP.Omen.Core.Model.DataStructure.Structs;
+using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
 using OmenHelper.Models;
 
 namespace OmenHelper.Services;
@@ -24,11 +22,8 @@ namespace OmenHelper.Services;
 internal sealed class OmenPerformanceController : IDisposable
 {
     private readonly int _sessionId;
-    private readonly JavaScriptSerializer _json = new JavaScriptSerializer();
-    private readonly OmenHsaClient _omenHsaClient = new OmenHsaClient();
+    private readonly OmenBiosClient _omenBiosClient = new OmenBiosClient();
     private readonly object _diagnosticsSync = new object();
-
-    private PipeServerV2 _performanceMonitorServer;
 
     private bool _started;
     private bool _disposed;
@@ -49,20 +44,19 @@ internal sealed class OmenPerformanceController : IDisposable
     private string _lastGraphicsRequestMode = string.Empty;
     private int? _lastGraphicsRequestReturnCode;
     private List<string> _supportModes = new List<string>();
-    private PerformanceMonitorSample _cpuSample = new PerformanceMonitorSample();
-    private PerformanceMonitorSample _gpuSample = new PerformanceMonitorSample();
-    private string _lastCpuMonitorJson = string.Empty;
-    private string _lastGpuMonitorJson = string.Empty;
     private string _lastPerformanceRequestMode = string.Empty;
     private string _lastPerformanceRequestPath = string.Empty;
     private int? _lastPerfType26ReturnCode;
+    private bool? _lastPerfType26ExecuteResult;
     private int? _lastPerfType34ReturnCode;
+    private bool? _lastPerfType34ExecuteResult;
     private int? _lastPerfType41ReturnCode;
+    private bool? _lastPerfType41ExecuteResult;
+    private int? _lastMaxFanReturnCode;
+    private bool? _lastMaxFanExecuteResult;
     private readonly Queue<string> _recentEvents = new Queue<string>();
 
     public event EventHandler<PerformanceControlState> StateChanged;
-
-    public event EventHandler<TelemetrySnapshot> TelemetryChanged;
 
     public event EventHandler<string> LogMessage;
 
@@ -78,48 +72,81 @@ internal sealed class OmenPerformanceController : IDisposable
             return;
         }
 
-        string performanceMonitorServerName = GetPerformanceMonitorServerName();
-        _performanceMonitorServer = new PipeServerV2(performanceMonitorServerName, ReceivePerformanceMonitorMessage);
-        _performanceMonitorServer.StartServer();
-        PerformanceMonitorHelper.RegisterPerformanceMonitoring(register: true, performanceMonitorServerName, PerformanceMonitorRegisterType.CPU_SIMPLE, runByTask: true);
-        PerformanceMonitorHelper.RegisterPerformanceMonitoring(register: true, performanceMonitorServerName, PerformanceMonitorRegisterType.GPU_SIMPLE, runByTask: true);
-
-        _started = true;
+        try
+        {
+            _omenBiosClient.Initialize();
+            Log("BIOS WMI client initialized.");
+        }
+        catch (Exception ex)
+        {
+            _available = false;
+            Log("BIOS WMI init failed: " + ex.Message);
+        }
 
         _supportModes = new List<string>
         {
             nameof(PerformanceMode.Default),
             nameof(PerformanceMode.Performance),
-            nameof(PerformanceMode.Cool),
-            nameof(PerformanceMode.Quiet),
             nameof(PerformanceMode.Eco),
-            "Unleash"
+            "Unleashed"
         };
+
+        _started = true;
 
         _ = RequestInitializationAsync();
         RefreshGraphicsMode();
         RefreshGraphicsSupport();
         RaiseStateChanged();
-        Log("Started firmware control path (BIOS/WMI) for performance/thermal/fan. HP control pipe is not used.");
+
+        Log("Started control path: BIOS/WMI only. HP pipe support removed.");
+        Log("Process: " + (Environment.Is64BitProcess ? "x64" : "x86") + ", OS: " + (Environment.Is64BitOperatingSystem ? "x64" : "x86"));
+        Log("Elevation: " + (IsAdministrator() ? "admin" : "not-admin"));
+
+        try
+        {
+            bool driverInstalled = CommonUtility.IsDriverInstalled();
+            bool driverMeetsMin = CommonUtility.IsDriverMeetMinReq();
+            Log("HpReadHWData: installed=" + driverInstalled + " meetsMin=" + driverMeetsMin);
+        }
+        catch (Exception ex)
+        {
+            Log("HpReadHWData check failed: " + ex.Message);
+        }
+    }
+
+    private static bool IsAdministrator()
+    {
+        try
+        {
+            WindowsIdentity identity = WindowsIdentity.GetCurrent();
+            WindowsPrincipal principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public async Task RequestInitializationAsync()
     {
         try
         {
-            MaxFanMode maxFan = await _omenHsaClient.GetMaxFanAsync().ConfigureAwait(false);
-            bool maxFanEnabled = maxFan == MaxFanMode.On;
+            bool maxFanEnabled = await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false);
             _currentLegacyFanMode = maxFanEnabled ? FanMode.Turbo : FanMode.Normal;
             _currentThermalMode = maxFanEnabled ? ThermalControl.Max : ThermalControl.Auto;
             _initialized = true;
             _available = true;
             RefreshGraphicsMode();
-            TrackEvent("Firmware", "Read max fan=" + maxFan);
+            TrackEvent("Firmware", "Read max fan=" + (maxFanEnabled ? "On" : "Off"));
             RaiseStateChanged();
         }
         catch (Exception ex)
         {
+            _initialized = false;
+            _available = false;
             Log("Firmware state refresh failed: " + ex.Message);
+            RaiseStateChanged();
         }
     }
 
@@ -141,10 +168,11 @@ internal sealed class OmenPerformanceController : IDisposable
         if (!string.IsNullOrWhiteSpace(_lastPerformanceRequestMode))
         {
             builder.AppendLine("  Last Perf Request: " + _lastPerformanceRequestMode + " (" + _lastPerformanceRequestPath + ")");
-            builder.AppendLine("    BIOS 131080/26 rc: " + (_lastPerfType26ReturnCode.HasValue ? _lastPerfType26ReturnCode.Value.ToString() : "<none>"));
-            builder.AppendLine("    BIOS 131080/34 rc: " + (_lastPerfType34ReturnCode.HasValue ? _lastPerfType34ReturnCode.Value.ToString() : "<none>"));
-            builder.AppendLine("    BIOS 131080/41 rc: " + (_lastPerfType41ReturnCode.HasValue ? _lastPerfType41ReturnCode.Value.ToString() : "<none>"));
+            builder.AppendLine("    BIOS 131080/26 exec: " + (_lastPerfType26ExecuteResult.HasValue ? _lastPerfType26ExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastPerfType26ReturnCode.HasValue ? _lastPerfType26ReturnCode.Value.ToString() : "<none>"));
+            builder.AppendLine("    BIOS 131080/34 exec: " + (_lastPerfType34ExecuteResult.HasValue ? _lastPerfType34ExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastPerfType34ReturnCode.HasValue ? _lastPerfType34ReturnCode.Value.ToString() : "<none>"));
+            builder.AppendLine("    BIOS 131080/41 exec: " + (_lastPerfType41ExecuteResult.HasValue ? _lastPerfType41ExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastPerfType41ReturnCode.HasValue ? _lastPerfType41ReturnCode.Value.ToString() : "<none>"));
         }
+        builder.AppendLine("  Last MaxFan exec: " + (_lastMaxFanExecuteResult.HasValue ? _lastMaxFanExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastMaxFanReturnCode.HasValue ? _lastMaxFanReturnCode.Value.ToString() : "<none>"));
         builder.AppendLine("  Thermal UI Type: " + _thermalModeUiType);
         builder.AppendLine("  Extreme Unlocked: " + _extremeUnlocked);
         builder.AppendLine("  Unleash Visible: " + _unleashVisible);
@@ -153,7 +181,7 @@ internal sealed class OmenPerformanceController : IDisposable
 
         try
         {
-            byte[] systemDesignData = _omenHsaClient.SystemDesignData;
+            byte[] systemDesignData = await _omenBiosClient.GetSystemDesignDataAsync().ConfigureAwait(false);
             RefreshGraphicsSupport();
             builder.AppendLine("BIOS / Platform");
             builder.AppendLine("  SystemDesignData: " + ((systemDesignData != null && systemDesignData.Length > 0) ? BitConverter.ToString(systemDesignData) : "<empty>"));
@@ -173,7 +201,7 @@ internal sealed class OmenPerformanceController : IDisposable
             builder.AppendLine("  LastGraphicsRequestReturnCode: " + (_lastGraphicsRequestReturnCode.HasValue ? _lastGraphicsRequestReturnCode.Value.ToString() : "<none>"));
             try
             {
-                builder.AppendLine("  MaxFan(BIOS): " + await _omenHsaClient.GetMaxFanAsync().ConfigureAwait(false));
+                builder.AppendLine("  MaxFan(BIOS): " + ((await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false)) ? "On" : "Off"));
             }
             catch (Exception ex)
             {
@@ -190,14 +218,6 @@ internal sealed class OmenPerformanceController : IDisposable
 
         lock (_diagnosticsSync)
         {
-            builder.AppendLine("Last CPU Monitor Payload");
-            builder.AppendLine(string.IsNullOrWhiteSpace(_lastCpuMonitorJson) ? "<none>" : _lastCpuMonitorJson);
-            builder.AppendLine();
-
-            builder.AppendLine("Last GPU Monitor Payload");
-            builder.AppendLine(string.IsNullOrWhiteSpace(_lastGpuMonitorJson) ? "<none>" : _lastGpuMonitorJson);
-            builder.AppendLine();
-
             builder.AppendLine("Recent Events");
             if (_recentEvents.Count == 0)
             {
@@ -220,28 +240,38 @@ internal sealed class OmenPerformanceController : IDisposable
         _lastPerformanceRequestMode = mode.ToString();
         _lastPerformanceRequestPath = string.Empty;
         _lastPerfType26ReturnCode = null;
+        _lastPerfType26ExecuteResult = null;
         _lastPerfType34ReturnCode = null;
+        _lastPerfType34ExecuteResult = null;
         _lastPerfType41ReturnCode = null;
+        _lastPerfType41ExecuteResult = null;
 
         if (await TrySetPerformanceModeFirmwareAsync(mode).ConfigureAwait(false))
         {
-            _lastPerformanceRequestPath = "Firmware";
+            _lastPerformanceRequestPath = "FirmwareThruDriver";
             _currentMode = mode;
+            await RefreshThermalFromMaxFanAsync().ConfigureAwait(false);
             RaiseStateChanged();
             return;
         }
 
-        _lastPerformanceRequestPath = "FirmwareFailed";
-        Log("Performance mode change failed through firmware path.");
+        _lastPerformanceRequestPath = "Failed";
+        Log("Performance mode change failed (firmware only).");
     }
 
     public async Task SetThermalModeAsync(ThermalControl thermalControl)
     {
-        // Confirmed firmware control for fan thermals is max-fan on/off (131080/39).
+        if (thermalControl == ThermalControl.Manual)
+        {
+            Log("ThermalControl.Manual is not implemented (would require custom fan curve control).");
+            return;
+        }
+
         bool enableMaxFan = thermalControl == ThermalControl.Max;
         bool success = await TrySetMaxFanAsync(enableMaxFan).ConfigureAwait(false);
         if (!success)
         {
+            Log("Thermal mode change failed (firmware only).");
             return;
         }
 
@@ -252,12 +282,11 @@ internal sealed class OmenPerformanceController : IDisposable
 
     public async Task SetLegacyFanModeAsync(FanMode mode)
     {
-        // FanMode mapping observed in HP enum: Quiet=0, Normal=1, Turbo=2.
-        // Firmware command 131080/39 only exposes max-fan toggle, so map Turbo->on and others->off.
         bool enableMaxFan = mode == FanMode.Turbo;
         bool success = await TrySetMaxFanAsync(enableMaxFan).ConfigureAwait(false);
         if (!success)
         {
+            Log("Legacy fan mode change failed (firmware only).");
             return;
         }
 
@@ -281,14 +310,7 @@ internal sealed class OmenPerformanceController : IDisposable
                 return false;
             }
 
-            int returnCode = await _omenHsaClient.BiosWmiCmd_Set(2, 82, new byte[4]
-            {
-                Convert.ToByte(mode),
-                0,
-                0,
-                0
-            }).ConfigureAwait(false);
-
+            int returnCode = await _omenBiosClient.SetGraphicsModeAsync(mode).ConfigureAwait(false);
             _lastGraphicsRequestReturnCode = returnCode;
             Log("Requested graphics mode change to " + mode + ". BIOS return code: " + returnCode + ".");
             RefreshGraphicsMode();
@@ -299,185 +321,6 @@ internal sealed class OmenPerformanceController : IDisposable
         {
             Log("Graphics mode change failed: " + ex.Message);
             return false;
-        }
-    }
-
-    private static bool IsUnleashedMode(PerformanceMode mode)
-    {
-        // On this platform, OMEN labels the mode value 4 as "Unleashed". HP's enum also calls it Extreme/L8.
-        return mode == PerformanceMode.Extreme || (int)mode == 4;
-    }
-
-    private static byte MapPerformanceModeToType26Value(PerformanceMode mode)
-    {
-        // Observed in OMEN background logs (Transcend 14):
-        // - Eco (256) -> 48
-        // - Default/Balanced (0) -> 48
-        // - Performance (1) -> 49
-        // - Unleashed (4) -> 4
-        switch (mode)
-        {
-            case PerformanceMode.Eco:
-            case PerformanceMode.Default:
-                return 48;
-            case PerformanceMode.Performance:
-                return 49;
-            default:
-                return IsUnleashedMode(mode) ? (byte)4 : (byte)0;
-        }
-    }
-
-    private static byte[] MapPerformanceModeToType34Payload(PerformanceMode mode)
-    {
-        // Maps to PowerControlBase.SetTgpPpabAsync(tgpEnable, ppabEnable, dState=1, gps=87) observed in logs.
-        // - Eco:        0,0,1,87
-        // - Default:    0,1,1,87
-        // - Performance 1,1,1,87
-        // - Unleashed:  1,1,1,87
-        bool isEco = mode == PerformanceMode.Eco;
-        bool isPerfLike = mode == PerformanceMode.Performance || IsUnleashedMode(mode);
-
-        byte tgpEnable = isPerfLike ? (byte)1 : (byte)0;
-        byte ppabEnable = isEco ? (byte)0 : (byte)1;
-        byte dState = 1;
-        byte gps = 87;
-        return new[] { tgpEnable, ppabEnable, dState, gps };
-    }
-
-    private async Task<bool> TrySetPerformanceModeFirmwareAsync(PerformanceMode mode)
-    {
-        try
-        {
-            byte type26Value = MapPerformanceModeToType26Value(mode);
-            if (type26Value == 0)
-            {
-                Log("Firmware mode mapping is unknown for " + mode + "; falling back to HP pipe control.");
-                return false;
-            }
-
-            _lastPerfType26ReturnCode = await _omenHsaClient.BiosWmiCmd_Set(131080, 26, new byte[4]
-            {
-                255,
-                type26Value,
-                0,
-                0
-            }).ConfigureAwait(false);
-
-            Log("Firmware SetMode: cmd=131080 type=26 input=[255," + type26Value + ",0,0] rc=" + _lastPerfType26ReturnCode);
-            if (_lastPerfType26ReturnCode != 0)
-            {
-                return false;
-            }
-
-            byte[] type34 = MapPerformanceModeToType34Payload(mode);
-            _lastPerfType34ReturnCode = await _omenHsaClient.BiosWmiCmd_Set(131080, 34, type34).ConfigureAwait(false);
-            Log("Firmware GPU status: cmd=131080 type=34 input=[" + string.Join(",", type34) + "] rc=" + _lastPerfType34ReturnCode);
-            if (_lastPerfType34ReturnCode != 0)
-            {
-                return false;
-            }
-
-            if (mode == PerformanceMode.Performance || IsUnleashedMode(mode))
-            {
-                // Observed OMEN background uses type=41 input=[255,255,255,45] during Performance/Unleashed.
-                _lastPerfType41ReturnCode = await _omenHsaClient.BiosWmiCmd_Set(131080, 41, new byte[4]
-                {
-                    255,
-                    255,
-                    255,
-                    45
-                }).ConfigureAwait(false);
-
-                Log("Firmware TPP/TDP: cmd=131080 type=41 input=[255,255,255,45] rc=" + _lastPerfType41ReturnCode);
-                if (_lastPerfType41ReturnCode != 0)
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Log("Firmware performance mode change failed: " + ex.Message);
-            return false;
-        }
-    }
-
-    private async Task<bool> TrySetMaxFanAsync(bool enabled)
-    {
-        try
-        {
-            byte value = enabled ? (byte)1 : (byte)0;
-            int returnCode = await _omenHsaClient.BiosWmiCmd_Set(131080, 39, new[] { value }).ConfigureAwait(false);
-            Log("Firmware MaxFan: cmd=131080 type=39 input=[" + value + "] rc=" + returnCode);
-            if (returnCode != 0)
-            {
-                return false;
-            }
-
-            MaxFanMode readback = await _omenHsaClient.GetMaxFanAsync().ConfigureAwait(false);
-            bool readbackEnabled = readback == MaxFanMode.On;
-            TrackEvent("Firmware", "Set max fan requested=" + enabled + ", readback=" + readback);
-            return readbackEnabled == enabled;
-        }
-        catch (Exception ex)
-        {
-            Log("Firmware max fan change failed: " + ex.Message);
-            return false;
-        }
-    }
-
-    private void ReceivePerformanceMonitorMessage(object payload)
-    {
-        try
-        {
-            PerseusRevMsg message = payload as PerseusRevMsg;
-            if (message == null)
-            {
-                return;
-            }
-
-            PerformanceMonitorPayload sample = _json.Deserialize<PerformanceMonitorPayload>(message.SendParameter as string);
-            if (sample == null)
-            {
-                return;
-            }
-
-            PerformanceMonitorSample mappedSample = new PerformanceMonitorSample
-            {
-                TemperatureString = sample.TemperatureString,
-                UsageString = sample.UsageString,
-                TemperatureState = sample.TemperatureState
-            };
-
-            if (message.FuncType == (int)PerformanceMonitorRegisterType.GPU_SIMPLE)
-            {
-                _gpuSample = mappedSample;
-                lock (_diagnosticsSync)
-                {
-                    _lastGpuMonitorJson = message.SendParameter as string ?? string.Empty;
-                }
-            }
-            else if (message.FuncType == (int)PerformanceMonitorRegisterType.CPU_SIMPLE)
-            {
-                _cpuSample = mappedSample;
-                lock (_diagnosticsSync)
-                {
-                    _lastCpuMonitorJson = message.SendParameter as string ?? string.Empty;
-                }
-            }
-
-            TrackEvent("Monitor", "FuncType=" + message.FuncType + ", Payload=" + (message.SendParameter ?? "<null>"));
-            TelemetryChanged?.Invoke(this, new TelemetrySnapshot
-            {
-                Cpu = CloneSample(_cpuSample),
-                Gpu = CloneSample(_gpuSample)
-            });
-        }
-        catch (Exception ex)
-        {
-            Log("Monitor receive failed: " + ex.Message);
         }
     }
 
@@ -504,26 +347,219 @@ internal sealed class OmenPerformanceController : IDisposable
         });
     }
 
-    private static PerformanceMonitorSample CloneSample(PerformanceMonitorSample source)
+    private static bool IsUnleashedMode(PerformanceMode mode)
     {
-        return new PerformanceMonitorSample
-        {
-            TemperatureString = source?.TemperatureString,
-            UsageString = source?.UsageString,
-            TemperatureState = source?.TemperatureState ?? 0
-        };
+        return mode == PerformanceMode.Extreme || (int)mode == 4;
     }
 
-    private string GetPerformanceMonitorServerName()
+    private static byte MapPerformanceModeToType26Value(PerformanceMode mode)
     {
-        return "HP.Omen.Overlay.PerformanceControl.PerformanceMonitor" + _sessionId;
+        switch (mode)
+        {
+            case PerformanceMode.Eco:
+            case PerformanceMode.Default:
+                return 48;
+            case PerformanceMode.Performance:
+                return 49;
+            default:
+                return IsUnleashedMode(mode) ? (byte)4 : (byte)0;
+        }
+    }
+
+    private static byte[] MapPerformanceModeToType34Payload(PerformanceMode mode)
+    {
+        bool isEco = mode == PerformanceMode.Eco;
+        bool isPerfLike = mode == PerformanceMode.Performance || IsUnleashedMode(mode);
+
+        byte tgpEnable = isPerfLike ? (byte)1 : (byte)0;
+        byte ppabEnable = isEco ? (byte)0 : (byte)1;
+        byte dState = 1;
+        byte gps = 87;
+        return new[] { tgpEnable, ppabEnable, dState, gps };
+    }
+
+    private async Task<bool> TrySetPerformanceModeFirmwareAsync(PerformanceMode mode)
+    {
+        try
+        {
+            byte type26Value = MapPerformanceModeToType26Value(mode);
+            if (type26Value == 0)
+            {
+                Log("Firmware mode mapping is unknown for " + mode + "; no BIOS-only write path available.");
+                return false;
+            }
+
+            byte[][] type26Candidates =
+            {
+                new byte[4] { 255, type26Value, 1, 0 },
+                new byte[4] { 255, type26Value, 0, 0 }
+            };
+
+            bool type26Succeeded = false;
+            foreach (byte[] payload in type26Candidates)
+            {
+                if (await TryFirmwareSetAsync(
+                    command: 131080,
+                    commandType: 26,
+                    payload: payload,
+                    returnDataSize: 4,
+                    logPrefix: "Firmware SetMode",
+                    onResult: r =>
+                    {
+                        _lastPerfType26ExecuteResult = r.ExecuteResult;
+                        _lastPerfType26ReturnCode = r.ReturnCode;
+                    }).ConfigureAwait(false))
+                {
+                    type26Succeeded = true;
+                    break;
+                }
+            }
+
+            if (!type26Succeeded)
+            {
+                return false;
+            }
+
+            byte[] type34 = MapPerformanceModeToType34Payload(mode);
+            bool type34Ok = await TryFirmwareSetAsync(
+                command: 131080,
+                commandType: 34,
+                payload: type34,
+                returnDataSize: 4,
+                logPrefix: "Firmware GPU status",
+                onResult: r =>
+                {
+                    _lastPerfType34ExecuteResult = r.ExecuteResult;
+                    _lastPerfType34ReturnCode = r.ReturnCode;
+                }).ConfigureAwait(false);
+
+            if (!type34Ok)
+            {
+                return false;
+            }
+
+            if (mode == PerformanceMode.Performance || IsUnleashedMode(mode))
+            {
+                byte[] type41Payload = new byte[4]
+                {
+                    255,
+                    255,
+                    255,
+                    45
+                };
+
+                bool type41Ok = await TryFirmwareSetAsync(
+                    command: 131080,
+                    commandType: 41,
+                    payload: type41Payload,
+                    returnDataSize: 4,
+                    logPrefix: "Firmware TPP/TDP",
+                    onResult: r =>
+                    {
+                        _lastPerfType41ExecuteResult = r.ExecuteResult;
+                        _lastPerfType41ReturnCode = r.ReturnCode;
+                    }).ConfigureAwait(false);
+
+                if (!type41Ok)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("Firmware performance mode change failed: " + ex.Message);
+            return false;
+        }
+    }
+
+    private async Task<bool> TrySetMaxFanAsync(bool enabled)
+    {
+        try
+        {
+            bool requestedEnabled = enabled;
+            bool ok = await _omenBiosClient.SetMaxFanAsync(enabled).ConfigureAwait(false);
+            _lastMaxFanExecuteResult = ok;
+            _lastMaxFanReturnCode = ok ? 0 : -1;
+
+            if (!ok)
+            {
+                return false;
+            }
+
+            bool immediateReadback = await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false);
+            await Task.Delay(1200).ConfigureAwait(false);
+            bool delayedReadback = await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false);
+            TrackEvent("Firmware", "Set max fan requested=" + (requestedEnabled ? "On" : "Off") + ", readbackNow=" + (immediateReadback ? "On" : "Off") + ", readbackDelayed=" + (delayedReadback ? "On" : "Off"));
+            if (delayedReadback != requestedEnabled)
+            {
+                Log("Firmware MaxFan did not stick (requested=" + requestedEnabled + ", delayedReadback=" + delayedReadback + ").");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("Firmware max fan change failed: " + ex.Message);
+            return false;
+        }
+    }
+
+    private async Task<bool> TryFirmwareSetAsync(int command, int commandType, byte[] payload, int returnDataSize, string logPrefix, Action<OmenBiosClient.BiosWmiResult> onResult)
+    {
+        OmenBiosClient.BiosWmiResult result = await _omenBiosClient.ExecuteAsync(
+            command: command,
+            commandType: commandType,
+            inputData: payload,
+            returnDataSize: returnDataSize).ConfigureAwait(false);
+
+        onResult?.Invoke(result);
+        Log(logPrefix + ": cmd=" + command + " type=" + commandType + " input=[" + string.Join(",", payload ?? Array.Empty<byte>()) + "] exec=" + result.ExecuteResult + " rc=" + result.ReturnCode + " out=" + FormatReturnData(result.ReturnData));
+
+        if (result.ExecuteResult && result.ReturnCode == 0)
+        {
+            return true;
+        }
+
+        Log(logPrefix + " failed: cmd=" + command + " type=" + commandType + " biosError=" + _omenBiosClient.LastError);
+        return false;
+    }
+
+    private async Task RefreshThermalFromMaxFanAsync()
+    {
+        try
+        {
+            bool maxFanEnabled = await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false);
+            _currentLegacyFanMode = maxFanEnabled ? FanMode.Turbo : FanMode.Normal;
+            _currentThermalMode = maxFanEnabled ? ThermalControl.Max : ThermalControl.Auto;
+            TrackEvent("Firmware", "Refresh max fan=" + (maxFanEnabled ? "On" : "Off"));
+        }
+        catch (Exception ex)
+        {
+            Log("Firmware max fan refresh failed: " + ex.Message);
+        }
+    }
+
+    private static string FormatReturnData(byte[] data)
+    {
+        if (data == null || data.Length == 0)
+        {
+            return "<empty>";
+        }
+
+        int take = Math.Min(8, data.Length);
+        string prefix = BitConverter.ToString(data, 0, take);
+        return data.Length <= take ? prefix : (prefix + "...(len=" + data.Length + ")");
     }
 
     private void RefreshGraphicsMode()
     {
         try
         {
-            _currentGraphicsMode = _omenHsaClient.GetGraphicsMode();
+            _currentGraphicsMode = _omenBiosClient.GetGraphicsModeAsync().GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
@@ -689,26 +725,6 @@ internal sealed class OmenPerformanceController : IDisposable
         }
 
         _disposed = true;
-
-        try
-        {
-            string performanceMonitorServerName = GetPerformanceMonitorServerName();
-            PerformanceMonitorHelper.RegisterPerformanceMonitoring(register: false, performanceMonitorServerName, PerformanceMonitorRegisterType.CPU_SIMPLE, runByTask: false);
-            PerformanceMonitorHelper.RegisterPerformanceMonitoring(register: false, performanceMonitorServerName, PerformanceMonitorRegisterType.GPU_SIMPLE, runByTask: false);
-        }
-        catch
-        {
-        }
-
-        _performanceMonitorServer?.Dispose();
-    }
-
-    private sealed class PerformanceMonitorPayload
-    {
-        public string TemperatureString { get; set; }
-
-        public string UsageString { get; set; }
-
-        public int TemperatureState { get; set; }
+        _omenBiosClient?.Dispose();
     }
 }

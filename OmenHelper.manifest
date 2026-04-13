@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly manifestVersion="1.0"
+    xmlns="urn:schemas-microsoft-com:asm.v1"
+    xmlns:asmv2="urn:schemas-microsoft-com:asm.v2"
+    xmlns:asmv3="urn:schemas-microsoft-com:asm.v3"
+    xmlns:compat="urn:schemas-microsoft-com:compatibility.v1"
+    xmlns:ws2="http://schemas.microsoft.com/SMI/2005/WindowsSettings"
+    xmlns:ws6="http://schemas.microsoft.com/SMI/2016/WindowsSettings"
+    xmlns:ws7="http://schemas.microsoft.com/SMI/2017/WindowsSettings">
+  <compat:compatibility>
+    <compat:application>
+      <compat:supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </compat:application>
+  </compat:compatibility>
+  <asmv2:trustInfo>
+    <asmv2:security>
+      <asmv3:requestedPrivileges>
+        <asmv3:requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+      </asmv3:requestedPrivileges>
+    </asmv2:security>
+  </asmv2:trustInfo>
+  <asmv3:application>
+    <asmv3:windowsSettings>
+      <ws2:dpiAware>true</ws2:dpiAware>
+      <ws6:dpiAwareness>PerMonitorV2</ws6:dpiAwareness>
+      <ws7:gdiScaling>false</ws7:gdiScaling>
+    </asmv3:windowsSettings>
+  </asmv3:application>
+</assembly>

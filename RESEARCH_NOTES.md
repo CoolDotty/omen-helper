@@ -4,6 +4,10 @@
 
 Build a small replacement utility for OMEN Gaming Hub performance controls on an OMEN Transcend 14 without automating the OMEN UI.
 
+## Implementation Status
+
+The shipped app has since been cut to BIOS/WMI-only control paths. The pipe-related notes below are historical reverse-engineering notes, not a supported runtime path in the current build.
+
 ## What Was Verified Locally
 
 - OMEN's overlay performance widget sends commands to `PerformanceControlFg<SessionId>`.

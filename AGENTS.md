@@ -6,18 +6,18 @@ Build a small replacement utility for **OMEN Gaming Hub** performance controls o
 
 ## Goal
 
-- Prefer a **direct firmware/driver control path** (BIOS/WMI) where possible.
+- Use **direct firmware/driver control path** (BIOS/WMI) when it is truly available.
 - Use HP background named pipes only when needed, and assume **reply/state channels may be gated**.
 - Keep the project safe: only expose controls we can confirm via readback/behavior.
 
-## What we’ve reverse engineered so far
+## What we've reverse engineered so far
 
 ### A) BIOS / WMI (firmware-backed) commands
 
-HP calls these via `ExecuteBiosWmiCommandThruDriver` (visible in OMEN BG logs). We observe a vendor “command” plus a “commandType” subcommand.
+HP calls these via `ExecuteBiosWmiCommandThruDriver` (visible in OMEN BG logs). We observe a vendor "command" plus a "commandType" subcommand.
 
-- **Performance mode (Transcend 14 verified)**:
-  - Set “platform performance mode”: `command=131080, commandType=26, input=[255,<modeByte>,0,0]`
+- **Performance mode (Transcend 14 observed in OMEN BG logs)**:
+  - Set "platform performance mode": `command=131080, commandType=26, input=[255,<modeByte>,0,0]`
   - Observed mode bytes on this machine:
     - Eco (`256`) -> `48` (L2)
     - Default/Balanced (`0`) -> `48` (L2)
@@ -45,28 +45,47 @@ HP calls these via `ExecuteBiosWmiCommandThruDriver` (visible in OMEN BG logs). 
   - Read: `command=131080, commandType=40` (cached at `HKCU\Software\HP\OMEN Ally\Settings\SystemDesignData`)
 
 - **OEM idle / periodic polling (meanings still being nailed down)**:
-  - Read 128-byte “status/settings blob” (selector appears to be 4 bytes): `command=131080, commandType=45, input=[0,0,0,0]` (out=128)
-  - Read 4-byte “temperature-ish” value: `command=131080, commandType=35, input=[0,0,0,0]` (out=4)
-    - HP’s `OmenHsaClient.DtGetTemperature()` uses `commandType=35` and reads `return[0]` as the value (that method uses input byte `1`).
-  - Write 128-byte “restore/apply settings blob”: `command=131080, commandType=46` (in=128 out=4)
+  - Read 128-byte "status/settings blob" (selector appears to be 4 bytes): `command=131080, commandType=45, input=[0,0,0,0]` (out=128)
+  - Read 4-byte "temperature-ish" value: `command=131080, commandType=35, input=[0,0,0,0]` (out=4)
+    - HP's `OmenHsaClient.DtGetTemperature()` uses `commandType=35` and reads `return[0]` as the value (that method uses input byte `1`).
+  - Write 128-byte "restore/apply settings blob": `command=131080, commandType=46` (in=128 out=4)
 
 Notes:
-- `returnCode=255` appears to be a generic failure/fallback in HP’s `OmenHsaClient` wrappers when the BIOS/WMI path fails.
+- `returnCode=255` appears to be a generic failure/fallback in HP's `OmenHsaClient` wrappers when the BIOS/WMI command path fails.
 - Hidden platform modes (`Cool`, `Quiet`) exist and show up in BIOS readback even if the current OMEN UI hides them.
+
+#### Important: observed operational reality (Transcend 14, this repo's PoC)
+
+Even though we can observe OMEN BG calling `ExecuteBiosWmiCommandThruDriver(...)` in logs, our standalone PoC cannot currently apply performance/thermal mode changes purely via BIOS/WMI when HP's background stack is not present.
+
+Observed on this machine:
+- HP driver path (`ExecuteBiosWmiCommandThruDriver*`):
+  - returns `executeResult=false` (no driver response), so the BIOS call doesn't execute.
+  - this happened even with `HpReadHWData` installed/running, and even when the app was elevated.
+- "Fusion" WMI/RPC fallback used by `BiosWmiCmd_Set(...)`:
+  - returns `returnCode=255` for these performance/thermal write types.
+- When HP OMEN background performance control is running:
+  - pipe writes can successfully apply mode changes.
+- When HP OMEN background performance control is not running:
+  - both firmware writes and pipe writes fail.
+
+Implication: treat BIOS/WMI performance/thermal writes as **best-effort/experimental** until we can prove a reliable non-HP-dependent execution path on this platform.
 
 ### B) HP background named pipes (writes work; replies are gated)
 
 This is how the OEM overlay drives performance controls today.
 
-- Write pipe: `PerformanceControlFg<SessionId>` (XML; HP `PipeClientV2`)
+- Write pipe: `PerformanceControlFg<SessionId>` (XML; HP `PipeClientV2` / `SerializerXml`)
   - Observed commands:
+    - `14` = UI launch / enable (seen in HP desktop module; send once before other writes)
     - `21` = set performance mode (`PerformanceMode` enum; includes `Cool` and `Quiet`)
     - `23` = set thermal mode (packed as `CurrentPerformanceMode * 1000 + ThermalControl`)
     - `25` = set legacy fan mode
     - `29` = request initialization/state
+  - Availability hint: event `Local\OMENCC_PIPE_PerformanceControlFg<SessionId>` is set when the server is up.
 
-- Why “state return” doesn’t work in a standalone app:
-  - OMEN BG sends init/update to overlay/widget pipes using `PipeClientV3`, which verifies the receiver’s process signature.
+- Why "state return" doesn't work in a standalone app:
+  - OMEN BG sends init/update to overlay/widget pipes using `PipeClientV3`, which verifies the receiver's process signature.
   - An unsigned app can send writes to the BG, but cannot receive those trusted replies.
 
 ### C) Telemetry
@@ -80,10 +99,10 @@ This is how the OEM overlay drives performance controls today.
 - Tail & decode BIOS/WMI calls: `tools\tail-omen-bios.ps1`
   - Default mode follows **new entries only**; pass `-FromStart` to replay the whole file.
   - Output includes `[PID:TID]` to avoid mixing interleaved calls.
-- dll dlldumps of the oem hp omen app are in /dlldumps
+- dll dlldumps of the OEM HP OMEN app are in `dlldumps\`
 
 ## Current project stance
 
-- Prefer the firmware path for performance modes and any safe reads.
-- Treat BIOS/WMI “unknown” commandTypes as **TBD** until we can correlate to HP code or confirm behavior.
-- Don’t rely on `PipeClientV3` reply channels for correctness; build our own readback (BIOS/WMI reads, inferred state, telemetry).
+- Prefer firmware paths for **reads** and only expose firmware writes we can confirm via return codes/readback/behavior.
+- Keep the HP pipe path as a pragmatic fallback for performance/thermal changes on Transcend 14, and clearly report "Unavailable" when HP background endpoints are down.
+- Don't rely on `PipeClientV3` reply channels for correctness; build our own readback (BIOS/WMI reads, inferred state, telemetry).

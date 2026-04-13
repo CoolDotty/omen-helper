@@ -2,11 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Hp.Bridge.Client.SDKs.PerformanceControl.Enums;
 using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
-using HP.Omen.Core.Model.DataStructure.Modules.FanControl.Enums;
 using OmenHelper.Models;
 using OmenHelper.Services;
 
@@ -16,12 +15,9 @@ internal sealed class MainForm : Form
 {
     private readonly OmenPerformanceController _controller = new OmenPerformanceController();
     private readonly Label _statusLabel = new Label();
-    private readonly Label _cpuLabel = new Label();
-    private readonly Label _gpuLabel = new Label();
     private readonly Label _graphicsLabel = new Label();
     private readonly Label _graphicsModeNoteLabel = new Label();
     private readonly ComboBox _thermalModeCombo = new ComboBox();
-    private readonly ComboBox _fanModeCombo = new ComboBox();
     private readonly TextBox _logTextBox = new TextBox();
     private readonly Dictionary<PerformanceMode, Button> _modeButtons = new Dictionary<PerformanceMode, Button>();
     private Button _integratedButton;
@@ -31,10 +27,10 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "OMEN Helper PoC";
+        Text = "OMEN Helper BIOS Control";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(900, 650);
-        Size = new Size(980, 720);
+        MinimumSize = new Size(900, 620);
+        Size = new Size(980, 680);
 
         InitializeUi();
 
@@ -57,12 +53,12 @@ internal sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         Label header = new Label
         {
             AutoSize = true,
-            Text = "Proof-of-concept for HP OMEN Transcend 14 control",
+            Text = "BIOS-only OMEN control",
             Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold, GraphicsUnit.Point),
             Margin = new Padding(0, 0, 0, 10)
         };
@@ -70,6 +66,10 @@ internal sealed class MainForm : Form
         _statusLabel.AutoSize = true;
         _statusLabel.Text = "Initializing firmware state.";
         _statusLabel.Margin = new Padding(0, 0, 0, 12);
+
+        _graphicsLabel.AutoSize = true;
+        _graphicsLabel.Text = "Graphics: reading current mode";
+        _graphicsLabel.Margin = new Padding(0, 0, 0, 12);
 
         GroupBox modeGroup = new GroupBox
         {
@@ -87,10 +87,8 @@ internal sealed class MainForm : Form
 
         AddModeButton(modePanel, PerformanceMode.Default, "Default");
         AddModeButton(modePanel, PerformanceMode.Performance, "Performance");
-        AddModeButton(modePanel, PerformanceMode.Quiet, "Quiet");
-        AddModeButton(modePanel, PerformanceMode.Cool, "Cool");
         AddModeButton(modePanel, PerformanceMode.Eco, "Eco");
-        AddModeButton(modePanel, PerformanceMode.Extreme, "Extreme / Unleash");
+        AddModeButton(modePanel, PerformanceMode.Extreme, "Unleashed");
 
         modeGroup.Controls.Add(modePanel);
 
@@ -107,41 +105,30 @@ internal sealed class MainForm : Form
         controlsRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         controlsRow.Controls.Add(BuildThermalGroup(), 0, 0);
-        controlsRow.Controls.Add(BuildFanGroup(), 1, 0);
+        controlsRow.Controls.Add(BuildActionsGroup(), 1, 0);
         controlsRow.Controls.Add(BuildGraphicsGroup(), 0, 1);
-        controlsRow.Controls.Add(BuildActionGroup(), 1, 1);
 
-        GroupBox telemetryGroup = new GroupBox
+        GroupBox spacer = new GroupBox
         {
-            Text = "Telemetry",
-            Dock = DockStyle.Top,
+            Dock = DockStyle.Fill,
             AutoSize = true,
             Padding = new Padding(12),
             Margin = new Padding(0, 0, 0, 12)
         };
-        TableLayoutPanel telemetryPanel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 2,
-            AutoSize = true
-        };
-        _cpuLabel.AutoSize = true;
-        _gpuLabel.AutoSize = true;
-        _graphicsLabel.AutoSize = true;
-        _cpuLabel.Text = "CPU: waiting for monitor registration";
-        _gpuLabel.Text = "GPU: waiting for monitor registration";
-        _graphicsLabel.Text = "Graphics: reading current mode";
-        telemetryPanel.Controls.Add(_cpuLabel, 0, 0);
-        telemetryPanel.Controls.Add(_gpuLabel, 0, 1);
-        telemetryPanel.Controls.Add(_graphicsLabel, 0, 2);
-        telemetryGroup.Controls.Add(telemetryPanel);
+        controlsRow.Controls.Add(spacer, 1, 1);
+
+        root.Controls.Add(header, 0, 0);
+        root.Controls.Add(_statusLabel, 0, 1);
+        root.Controls.Add(_graphicsLabel, 0, 2);
+        root.Controls.Add(modeGroup, 0, 3);
+        root.Controls.Add(controlsRow, 0, 4);
 
         GroupBox logGroup = new GroupBox
         {
             Text = "Log",
-            Dock = DockStyle.Fill,
-            Padding = new Padding(12)
+            Dock = DockStyle.Bottom,
+            Padding = new Padding(12),
+            Height = 240
         };
         _logTextBox.Dock = DockStyle.Fill;
         _logTextBox.Multiline = true;
@@ -150,17 +137,8 @@ internal sealed class MainForm : Form
         _logTextBox.Font = new Font("Consolas", 10F, FontStyle.Regular, GraphicsUnit.Point);
         logGroup.Controls.Add(_logTextBox);
 
-        root.Controls.Add(header, 0, 0);
-        root.Controls.Add(_statusLabel, 0, 1);
-        root.Controls.Add(modeGroup, 0, 2);
-        root.Controls.Add(controlsRow, 0, 3);
-        root.Controls.Add(telemetryGroup, 0, 4);
-
         Controls.Add(logGroup);
         Controls.Add(root);
-
-        logGroup.Dock = DockStyle.Bottom;
-        logGroup.Height = 240;
     }
 
     private GroupBox BuildThermalGroup()
@@ -173,15 +151,18 @@ internal sealed class MainForm : Form
             Padding = new Padding(12),
             Margin = new Padding(0, 0, 12, 12)
         };
+
         FlowLayoutPanel thermalPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             AutoSize = true
         };
+
         _thermalModeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _thermalModeCombo.Width = 180;
-        _thermalModeCombo.Items.AddRange(new object[] { ThermalControl.Auto, ThermalControl.Max, ThermalControl.Manual });
+        _thermalModeCombo.Items.AddRange(new object[] { ThermalControl.Auto, ThermalControl.Max });
         _thermalModeCombo.SelectedIndex = 0;
+
         Button applyThermalButton = new Button
         {
             Text = "Apply Thermal",
@@ -194,56 +175,14 @@ internal sealed class MainForm : Form
                 await _controller.SetThermalModeAsync(thermalControl);
             }
         };
+
         thermalPanel.Controls.Add(_thermalModeCombo);
         thermalPanel.Controls.Add(applyThermalButton);
         thermalGroup.Controls.Add(thermalPanel);
         return thermalGroup;
     }
 
-    private GroupBox BuildFanGroup()
-    {
-        GroupBox fanGroup = new GroupBox
-        {
-            Text = "Legacy Fan Mode",
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            Padding = new Padding(12),
-            Margin = new Padding(0, 0, 12, 12)
-        };
-        FlowLayoutPanel fanPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true
-        };
-        _fanModeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _fanModeCombo.Width = 180;
-        foreach (FanMode fanMode in Enum.GetValues(typeof(FanMode)).Cast<FanMode>())
-        {
-            _fanModeCombo.Items.Add(fanMode);
-        }
-        if (_fanModeCombo.Items.Count > 0)
-        {
-            _fanModeCombo.SelectedIndex = 0;
-        }
-        Button applyFanButton = new Button
-        {
-            Text = "Apply Fan",
-            AutoSize = true
-        };
-        applyFanButton.Click += async (_, __) =>
-        {
-            if (_fanModeCombo.SelectedItem is FanMode fanMode)
-            {
-                await _controller.SetLegacyFanModeAsync(fanMode);
-            }
-        };
-        fanPanel.Controls.Add(_fanModeCombo);
-        fanPanel.Controls.Add(applyFanButton);
-        fanGroup.Controls.Add(fanPanel);
-        return fanGroup;
-    }
-
-    private GroupBox BuildActionGroup()
+    private GroupBox BuildActionsGroup()
     {
         GroupBox actionGroup = new GroupBox
         {
@@ -253,25 +192,23 @@ internal sealed class MainForm : Form
             Padding = new Padding(12),
             Margin = new Padding(0, 0, 0, 12)
         };
+
         FlowLayoutPanel actionPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             AutoSize = true
         };
+
         Button refreshButton = new Button
         {
             Text = "Refresh State",
             AutoSize = true
         };
         refreshButton.Click += async (_, __) => await _controller.RequestInitializationAsync();
+
         Button notesButton = new Button
         {
             Text = "Open Notes",
-            AutoSize = true
-        };
-        Button diagnosticsButton = new Button
-        {
-            Text = "Open Diagnostics",
             AutoSize = true
         };
         notesButton.Click += (_, __) =>
@@ -282,7 +219,14 @@ internal sealed class MainForm : Form
                 UseShellExecute = true
             });
         };
+
+        Button diagnosticsButton = new Button
+        {
+            Text = "Open Diagnostics",
+            AutoSize = true
+        };
         diagnosticsButton.Click += (_, __) => ShowDiagnosticsWindow();
+
         actionPanel.Controls.Add(refreshButton);
         actionPanel.Controls.Add(notesButton);
         actionPanel.Controls.Add(diagnosticsButton);
@@ -309,13 +253,8 @@ internal sealed class MainForm : Form
             WrapContents = false
         };
 
-        Label noteLabel = new Label
-        {
-            AutoSize = true,
-            Text = "Loading supported graphics modes..."
-        };
-        _graphicsModeNoteLabel.Text = noteLabel.Text;
         _graphicsModeNoteLabel.AutoSize = true;
+        _graphicsModeNoteLabel.Text = "Loading supported graphics modes...";
 
         _integratedButton = new Button
         {
@@ -362,7 +301,6 @@ internal sealed class MainForm : Form
     private void OnLoad(object sender, EventArgs e)
     {
         _controller.StateChanged += ControllerOnStateChanged;
-        _controller.TelemetryChanged += ControllerOnTelemetryChanged;
         _controller.LogMessage += ControllerOnLogMessage;
         _controller.Start();
     }
@@ -387,8 +325,6 @@ internal sealed class MainForm : Form
             " | Mode: " + state.CurrentMode +
             " | Graphics: " + state.CurrentGraphicsMode +
             " | Thermal: " + state.CurrentThermalMode +
-            " | Legacy Fan: " + state.CurrentLegacyFanMode +
-            " | Thermal UI: " + state.ThermalUiType +
             " | Support: " + string.Join(", ", state.SupportModes ?? Array.Empty<string>());
 
         foreach (KeyValuePair<PerformanceMode, Button> pair in _modeButtons)
@@ -406,11 +342,6 @@ internal sealed class MainForm : Form
             _thermalModeCombo.SelectedItem = thermalControl;
         }
 
-        if (Enum.TryParse(state.CurrentLegacyFanMode, out FanMode fanMode))
-        {
-            _fanModeCombo.SelectedItem = fanMode;
-        }
-
         _graphicsLabel.Text = "Graphics: " + state.CurrentGraphicsMode;
         _integratedButton.Visible = state.GraphicsSupportsUma;
         _hybridButton.Visible = state.GraphicsSupportsHybrid;
@@ -423,18 +354,6 @@ internal sealed class MainForm : Form
             " | Restart required: " + state.GraphicsNeedsReboot;
     }
 
-    private void ControllerOnTelemetryChanged(object sender, TelemetrySnapshot snapshot)
-    {
-        if (InvokeRequired)
-        {
-            BeginInvoke(new Action<object, TelemetrySnapshot>(ControllerOnTelemetryChanged), sender, snapshot);
-            return;
-        }
-
-        _cpuLabel.Text = "CPU: " + FormatSample(snapshot.Cpu);
-        _gpuLabel.Text = "GPU: " + FormatSample(snapshot.Gpu);
-    }
-
     private void ControllerOnLogMessage(object sender, string message)
     {
         if (InvokeRequired)
@@ -444,18 +363,6 @@ internal sealed class MainForm : Form
         }
 
         _logTextBox.AppendText(message + Environment.NewLine);
-    }
-
-    private static string FormatSample(PerformanceMonitorSample sample)
-    {
-        if (sample == null)
-        {
-            return "no data";
-        }
-
-        string temperature = string.IsNullOrWhiteSpace(sample.TemperatureString) ? "--" : sample.TemperatureString;
-        string usage = string.IsNullOrWhiteSpace(sample.UsageString) ? "--" : sample.UsageString;
-        return temperature + " | " + usage + " | state " + sample.TemperatureState;
     }
 
     private static IEnumerable<string> BuildSupportedGraphicsModeList(PerformanceControlState state)
@@ -496,7 +403,7 @@ internal sealed class MainForm : Form
         _diagnosticsForm.Show(this);
     }
 
-    private async System.Threading.Tasks.Task ApplyGraphicsModeAsync(GraphicsSwitcherMode mode, string label)
+    private async Task ApplyGraphicsModeAsync(GraphicsSwitcherMode mode, string label)
     {
         DialogResult result = MessageBox.Show(
             this,

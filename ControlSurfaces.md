@@ -1,67 +1,33 @@
-# OMEN Transcend 14: Feature Inventory + Control Surfaces (Windows)
+# OMEN Transcend 14: Feature Inventory + BIOS Control Surfaces
 
-This file is split into:
-- **Feature inventory**: what the official OMEN app UI exposes
-- **Control surfaces**: the actual programmatic interfaces we can drive (or are blocked from driving)
+This file tracks the app-visible controls that are still supported in the BIOS-only build.
 
-## Feature Inventory (Official OMEN App UI)
+## Feature Inventory
 
 - Toggle performance modes
   - Eco
   - Balanced
   - Performance
   - Unleashed
-- Adjust fan speed
-  - Eco mode
-    - Cannot set fan speed
-  - balanced or performance mode
-    - Auto or Max
-  - Auto, Max, or Manual.
-    - Manual lets you adjust the fan curve
-      - increments of 5 degrees celsius between 50 and 90 degrees
-      - between 0% and 100% fan speed
-      - Curved linearly between increments
-      - Choice of adjust the CPU, GPU, or chassis temperature curve
-- Overclock the gpu
-  - Set core offset and memory offset
-- Set power targets
-  - Smart performance gain
-    - On or off
-    - between 0w or 15w
-  - Maximum battery drain
-    - Between 10% to 40%
-  - PL1
-    - Between 25W to 65W
-  - PL2
-    - Between 25W to 77W
-  - PL4
-    - Between 135W ad 168W
-- Adjust keyboard lighting
-  - 4 RGB keyboard zones
-    - Left
-    - Middle
-    - Right
-    - WASD
-  - Windows Dynamic Lighting compatible?
-- Change gpu mode
-  - Hybrid mode: use both integrated and discrete graphics depending on the application
-  - Integrated Graphics Only: Turn off your discrete GPU and use onboard GPU only for maximum battery life
+- Adjust fan behavior
+  - Auto
+  - Max
+- Change GPU mode
+  - Hybrid mode
+  - Integrated Graphics Only
   - Changing requires a reboot to take effect
-- Key assignment
-  - Rebind the keyboard
-  - Out of scope for now
 
-## Control Surfaces (Reverse Engineered)
+## Control Surfaces
 
-### A) BIOS / WMI Commands (Preferred When Available)
-These can be called directly from our app without OMEN pipes, but require whatever HP firmware/driver plumbing is present on the system.
+### A) BIOS / WMI Commands
+These are the only control paths used by the app now.
 
-- **Performance modes (Transcend 14 verified)**:
-  - Set “platform performance mode”: `command=131080, commandType=26, input=[255,<modeByte>,0,0]`
+- **Performance modes**
+  - Set platform performance mode: `command=131080, commandType=26, input=[255,<modeByte>,0,0]`
     - Observed mode bytes on this machine:
-      - Eco (256) -> `48` (L2)
-      - Default/Balanced (0) -> `48` (L2)
-      - Performance (1) -> `49` (L7)
+      - Eco (256) -> `48`
+      - Default/Balanced (0) -> `48`
+      - Performance (1) -> `49`
       - Unleashed (4) -> `4`
   - Set GPU power behavior used by each mode:
     - `command=131080, commandType=34, input=[tgpEnable, ppabEnable, dState, gps]`
@@ -70,59 +36,35 @@ These can be called directly from our app without OMEN pipes, but require whatev
       - Default -> `0,1,1,87`
       - Performance -> `1,1,1,87`
       - Unleashed -> `1,1,1,87`
-  - Set concurrent TDP/TPP (observed only for Performance/Unleashed):
+  - Set concurrent TDP/TPP:
     - `command=131080, commandType=41, input=[255,255,255,45]`
-  - Status: implemented in `omen-helper` as the primary control path; no OMEN background pipes required for these modes on this machine.
 
-- **Graphics mode (MUX-ish)**:
-  - Read: `command=1, commandType=82` (`GetGraphicsMode()`)
-  - Write: `command=2, commandType=82, input=[mode,0,0,0]` (`SetGraphicsMode(...)`)
-  - Modes enum: `Hybrid=0`, `Discrete=1`, `Optimus=2`, `UMAMode=3`
-  - This machine:
-    - HP helper reports supported bits `SupportedModes=6` (Hybrid + Discrete), `SupportedUMAmode=false`, reboot required.
-    - Attempting `Discrete` currently returns `255` (failure) and stays on `Hybrid`.
+- **Graphics mode**
+  - Read: `command=1, commandType=82`
+  - Write: `command=2, commandType=82, input=[mode,0,0,0]`
+  - Enum mapping:
+    - `Hybrid=0`
+    - `Discrete=1`
+    - `Optimus=2`
+    - `UMAMode=3`
+  - On this machine, HP helper reports `SupportedModes=6` and `SupportedUMAmode=false`.
+  - Attempts to set `Discrete` have returned `255` and stayed on `Hybrid`.
 
-- **Max fan**:
-  - Write: `command=131080, commandType=39, input=[mode]` (`SetMaxFan(...)`)
+- **Max fan**
+  - Write: `command=131080, commandType=39, input=[mode]`
   - Read: `command=131080, commandType=38`
 
-- **Periodic firmware polling (observed while OEM app is idle)**:
-  - Read 128-byte “status/settings blob” (meaning TBD): `command=131080, commandType=45, input=[0,0,0,0]` (returnDataSize=128)
-    - Observed repeatedly in bursts across multiple threads while OMEN Background is running.
-  - Read 4-byte “temperature-ish” value: `command=131080, commandType=35, input=[0,0,0,0]` (returnDataSize=4)
-    - HP’s `OmenHsaClient.DtGetTemperature()` uses `commandType=35` and reads `return[0]` as the value (but its input byte is `1` in that method; OEM logs often show `0,0,0,0`).
-    - The OEM log often prints `ChangeIrSensorToBoard = False` near these calls, so this may be related to an IR/board temperature source selection on some platforms.
-  - Write 128-byte “restore/apply settings blob” (meaning TBD): `command=131080, commandType=46` (inputDataSize=128, returnDataSize=4)
-
-- **System design data / capability bits**:
+- **System design data / capability bits**
   - Read: `command=131080, commandType=40`
   - Cached at: `HKCU\\Software\\HP\\OMEN Ally\\Settings\\SystemDesignData`
 
-Known limitation: we do not yet have confirmed BIOS/WMI command IDs for “performance mode” and “thermal mode” equivalents on this platform.
+## Current App Surface
 
-### B) HP Background Pipes (Works For Writes; Replies Are Gated)
-This is how the OMEN overlay controls performance modes today. It works for our standalone app *only as long as HP background endpoints exist*.
+- Performance modes: direct BIOS/WMI only, with safe readback where available.
+- Graphics mode: direct BIOS/WMI only.
+- Fan control: BIOS-backed max fan on/off only.
+- Telemetry: not backed by HP pipes in the app.
 
-- **Performance mode / thermal / legacy fan writes**:
-  - Pipe: `PerformanceControlFg<SessionId>`
-  - Serializer: XML (`PipeClientV2`)
-  - Payload: `PerseusRevMsg { SendParameter = PerformanceControlMsg { Command = <int>, Data = <object> } }`
-  - Observed commands:
-    - `21` = set performance mode (`PerformanceMode` enum; includes `Cool` and `Quiet` even if UI hides them)
-    - `23` = set thermal mode (packed as `CurrentPerformanceMode * 1000 + ThermalControl`)
-    - `25` = set legacy fan mode
-    - `29` = request initialization/state
+## Historical Notes
 
-- **Why state return does not work in our app**:
-  - Background sends init/update to overlay/widget pipes using `PipeClientV3` (JSON + signature verification of the receiver process).
-  - Because our app is not HP-signed, we cannot receive those PipeV3 replies.
-  - Result: we can write mode changes, but we must build our own readback (BIOS/WMI reads, inferred state, etc.).
-
-### C) Telemetry
-- We can get telemetry via:
-  - `LibreHardwareMonitor` + Windows perf counters (preferred, no HP dependencies)
-  - HP performance monitor registration pipes (works today, but depends on HP background being up)
-
-## Current Operational Dependency
-- Performance modes: no longer require OMEN to be launched (firmware path).
-- Telemetry and some advanced features may still depend on HP background endpoints if enabled (pipes/PerfMonitor registration).
+The HP background pipe paths that were reverse engineered during research are no longer part of the app surface. They remain documented elsewhere in the repo for reference, but the build does not use them.
