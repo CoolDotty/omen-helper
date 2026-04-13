@@ -80,10 +80,10 @@ This is how the OEM overlay drives performance controls today.
 - Tail & decode BIOS/WMI calls: `tools\tail-omen-bios.ps1`
   - Default mode follows **new entries only**; pass `-FromStart` to replay the whole file.
   - Output includes `[PID:TID]` to avoid mixing interleaved calls.
+- dll dlldumps of the oem hp omen app are in /dlldumps
 
 ## Current project stance
 
 - Prefer the firmware path for performance modes and any safe reads.
 - Treat BIOS/WMI “unknown” commandTypes as **TBD** until we can correlate to HP code or confirm behavior.
 - Don’t rely on `PipeClientV3` reply channels for correctness; build our own readback (BIOS/WMI reads, inferred state, telemetry).
-
