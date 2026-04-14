@@ -20,9 +20,8 @@ internal sealed class MainForm : Form
     private readonly ComboBox _thermalModeCombo = new ComboBox();
     private readonly TextBox _logTextBox = new TextBox();
     private readonly Dictionary<PerformanceMode, Button> _modeButtons = new Dictionary<PerformanceMode, Button>();
-    private Button _integratedButton;
+    private Button _umaButton;
     private Button _hybridButton;
-    private Button _discreteButton;
     private DiagnosticsForm _diagnosticsForm;
 
     public MainForm()
@@ -256,31 +255,23 @@ internal sealed class MainForm : Form
         _graphicsModeNoteLabel.AutoSize = true;
         _graphicsModeNoteLabel.Text = "Loading supported graphics modes...";
 
-        _integratedButton = new Button
+        _umaButton = new Button
         {
-            Text = "Integrated (UMA)",
+            Text = "UMA",
             AutoSize = true
         };
-        _integratedButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.UMAMode, "Integrated Graphics Only");
+        _umaButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.UMAMode, "UMA");
 
         _hybridButton = new Button
         {
             Text = "Hybrid",
             AutoSize = true
         };
-        _hybridButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.Hybrid, "Hybrid Graphics");
-
-        _discreteButton = new Button
-        {
-            Text = "Discrete",
-            AutoSize = true
-        };
-        _discreteButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.Discrete, "Discrete Graphics");
+        _hybridButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.Hybrid, "Hybrid");
 
         graphicsPanel.Controls.Add(_graphicsModeNoteLabel);
-        graphicsPanel.Controls.Add(_integratedButton);
         graphicsPanel.Controls.Add(_hybridButton);
-        graphicsPanel.Controls.Add(_discreteButton);
+        graphicsPanel.Controls.Add(_umaButton);
         graphicsGroup.Controls.Add(graphicsPanel);
         return graphicsGroup;
     }
@@ -323,7 +314,7 @@ internal sealed class MainForm : Form
             "Initialized: " + state.Initialized +
             " | Available: " + state.Available +
             " | Mode: " + state.CurrentMode +
-            " | Graphics: " + state.CurrentGraphicsMode +
+            " | Graphics: " + FormatGraphicsMode(state.CurrentGraphicsMode) +
             " | Thermal: " + state.CurrentThermalMode +
             " | Support: " + string.Join(", ", state.SupportModes ?? Array.Empty<string>());
 
@@ -342,16 +333,21 @@ internal sealed class MainForm : Form
             _thermalModeCombo.SelectedItem = thermalControl;
         }
 
-        _graphicsLabel.Text = "Graphics: " + state.CurrentGraphicsMode;
-        _integratedButton.Visible = state.GraphicsSupportsUma;
-        _hybridButton.Visible = state.GraphicsSupportsHybrid;
-        _discreteButton.Visible = state.GraphicsSupportsDiscrete;
-        UpdateGraphicsButtonState(_integratedButton, "Integrated (UMA)", state.GraphicsSupportsUma, state.CurrentGraphicsMode, GraphicsSwitcherMode.UMAMode);
-        UpdateGraphicsButtonState(_hybridButton, "Hybrid", state.GraphicsSupportsHybrid, state.CurrentGraphicsMode, GraphicsSwitcherMode.Hybrid);
-        UpdateGraphicsButtonState(_discreteButton, "Discrete", state.GraphicsSupportsDiscrete, state.CurrentGraphicsMode, GraphicsSwitcherMode.Discrete);
-        _graphicsModeNoteLabel.Text =
-            "Supported: " + string.Join(", ", BuildSupportedGraphicsModeList(state)) +
-            " | Restart required: " + state.GraphicsNeedsReboot;
+        _graphicsLabel.Text = "Graphics: " + FormatGraphicsMode(state.CurrentGraphicsMode);
+        _umaButton.Visible = state.GraphicsModeSwitchSupported;
+        _hybridButton.Visible = state.GraphicsModeSwitchSupported;
+        UpdateGraphicsButtonState(_umaButton, "UMA", state.GraphicsModeSwitchSupported, state.CurrentGraphicsMode, GraphicsSwitcherMode.UMAMode);
+        UpdateGraphicsButtonState(_hybridButton, "Hybrid", state.GraphicsModeSwitchSupported, state.CurrentGraphicsMode, GraphicsSwitcherMode.Hybrid);
+        if (!state.GraphicsModeSwitchSupported)
+        {
+            _graphicsModeNoteLabel.Text = "Graphics switching not supported on this platform.";
+        }
+        else
+        {
+            _graphicsModeNoteLabel.Text =
+                "Supported: " + string.Join(", ", BuildSupportedGraphicsModeList(state)) +
+                " | Restart required: " + state.GraphicsNeedsReboot;
+        }
     }
 
     private void ControllerOnLogMessage(object sender, string message)
@@ -367,20 +363,26 @@ internal sealed class MainForm : Form
 
     private static IEnumerable<string> BuildSupportedGraphicsModeList(PerformanceControlState state)
     {
-        if (state.GraphicsSupportsUma)
-        {
-            yield return "Integrated";
-        }
-
-        if (state.GraphicsSupportsHybrid)
+        if (state.GraphicsModeSwitchSupported)
         {
             yield return "Hybrid";
+            yield return "UMA";
+        }
+    }
+
+    private static string FormatGraphicsMode(string currentGraphicsMode)
+    {
+        if (string.Equals(currentGraphicsMode, GraphicsSwitcherMode.UMAMode.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            return "UMA";
         }
 
-        if (state.GraphicsSupportsDiscrete)
+        if (string.Equals(currentGraphicsMode, GraphicsSwitcherMode.Hybrid.ToString(), StringComparison.OrdinalIgnoreCase))
         {
-            yield return "Discrete";
+            return "Hybrid";
         }
+
+        return currentGraphicsMode;
     }
 
     private static void UpdateGraphicsButtonState(Button button, string title, bool supported, string currentGraphicsMode, GraphicsSwitcherMode representedMode)

@@ -16,13 +16,15 @@ internal sealed class PerformanceControlState
 
     public string CurrentGraphicsMode { get; set; }
 
+    public bool GraphicsModeSwitchSupported { get; set; }
+
     public bool GraphicsSupportsUma { get; set; }
 
     public bool GraphicsSupportsHybrid { get; set; }
 
-    public bool GraphicsSupportsDiscrete { get; set; }
-
     public bool GraphicsNeedsReboot { get; set; }
+
+    public byte GraphicsModeSwitchBits { get; set; }
 
     public string LastGraphicsRequestMode { get; set; }
 

@@ -1,5 +1,6 @@
 # Reverse-engineering artifacts
 dlldumps/
+OmenMon/
 
 # Build outputs
 bin/

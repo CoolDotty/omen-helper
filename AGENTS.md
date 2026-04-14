@@ -39,7 +39,9 @@ HP calls these via `ExecuteBiosWmiCommandThruDriver` (visible in OMEN BG logs). 
   - Read: `command=1, commandType=82` (`GetGraphicsMode()`)
   - Write: `command=2, commandType=82, input=[mode,0,0,0]` (`SetGraphicsMode(...)`)
   - Enum mapping used by HP code: `Hybrid=0`, `Discrete=1`, `Optimus=2`, `UMAMode=3`
-  - On this machine, HP runtime helper reports `SupportedModes=6` (Hybrid + Discrete), but attempts to set `Discrete` have returned `255` and stayed on Hybrid.
+  - On this machine, the earlier helper-flag interpretation that implied discrete support was wrong.
+  - Treat the confirmed user-facing graphics modes as `Integrated`/`UMA` and `Hybrid`.
+  - Do not expose `Discrete` as a confirmed mode on this laptop unless future readback proves it works.
 
 - **System design data / capability bits**:
   - Read: `command=131080, commandType=40` (cached at `HKCU\Software\HP\OMEN Ally\Settings\SystemDesignData`)
@@ -87,6 +89,7 @@ They are no longer part of the app surface.
   - Default mode follows **new entries only**; pass `-FromStart` to replay the whole file.
   - Output includes `[PID:TID]` to avoid mixing interleaved calls.
 - dll dlldumps of the OEM HP OMEN app are in `dlldumps\`
+- an existing third party hp app OmenMon is in `OmenMon\`
 
 ## Current project stance
 

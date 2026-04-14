@@ -14,7 +14,7 @@ This file tracks the app-visible controls that are still supported in the BIOS-o
   - Max
 - Change GPU mode
   - Hybrid mode
-  - Integrated Graphics Only
+  - Integrated Graphics Only (UMA)
   - Changing requires a reboot to take effect
 
 ## Control Surfaces
@@ -47,8 +47,9 @@ These are the only control paths used by the app now.
     - `Discrete=1`
     - `Optimus=2`
     - `UMAMode=3`
-  - On this machine, HP helper reports `SupportedModes=6` and `SupportedUMAmode=false`.
-  - Attempts to set `Discrete` have returned `255` and stayed on `Hybrid`.
+  - On this machine, the earlier helper-flag interpretation that implied discrete support was wrong.
+  - Treat the confirmed user-facing graphics modes as `Hybrid` and `Integrated Graphics Only (UMA)`.
+  - Do not expose `Discrete` as a confirmed mode on this laptop unless a future BIOS readback proves it works.
 
 - **Max fan**
   - Write: `command=131080, commandType=39, input=[mode]`

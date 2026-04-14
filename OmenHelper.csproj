@@ -11,6 +11,7 @@
     <GenerateResourceUsePreserializedResources>true</GenerateResourceUsePreserializedResources>
     <AssemblyName>OmenHelper</AssemblyName>
     <RootNamespace>OmenHelper</RootNamespace>
+    <DefaultItemExcludes>$(DefaultItemExcludes);dlldumps\**\*</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,10 +32,14 @@
 
   <ItemGroup>
     <PackageReference Include="System.Resources.Extensions" Version="8.0.0" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.0.0" />
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="dlldumps\**\*.cs" />
+    <Compile Remove="OmenMon\**\*.cs" />
+    <EmbeddedResource Remove="OmenMon\**\*" />
+    <None Remove="OmenMon\**\*" />
+    <Content Remove="OmenMon\**\*" />
   </ItemGroup>
 
   <ItemGroup>

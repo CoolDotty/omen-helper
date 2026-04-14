@@ -28,10 +28,12 @@ The shipped app has since been cut to BIOS/WMI-only control paths. The pipe-rela
 - `Unleashed` maps to backend `L8`.
 - `Extreme` exists in shared HP software capability structures, but it is not unlocked on this platform.
 - This is consistent with the thinner OMEN Transcend 14 policy set being more restrictive than larger OMEN 16-class systems.
-- The user-observed graphics switcher UI on this machine appeared to expose `Integrated` and `Hybrid`, and HP required a restart for the change to take effect.
-- HP's live runtime helper reports `SupportedModes = 6` and `SupportedUMAmode = False` on this machine.
-- `SupportedModes = 6` means the platform advertises `Hybrid` and `Discrete` support, but not `UMA`.
-- A live attempt to switch to `Discrete` from the standalone PoC returned BIOS/WMI `returnCode = 255` and the system stayed on `Hybrid` after reboot.
+- The user-observed graphics switcher UI on this machine exposed `Integrated`/`UMA` and `Hybrid`, and HP required a restart for the change to take effect.
+- HP's live runtime helper reported `SupportedModes = 6` and `SupportedUMAmode = False`, but that readout does not map cleanly to a working discrete mode on this machine.
+- The earlier notes misread the helper flags as discrete support on this machine.
+- Treat the confirmed user-facing graphics modes as `Integrated`/`UMA` and `Hybrid`.
+- Do not infer `Discrete` support from `SupportedModes = 6` alone on this platform.
+- A request that was previously labeled `Discrete` did not produce a confirmed discrete-only mode after reboot.
 - In `OmenHsaClient`, `255` is the generic fallback error code when the BIOS/WMI command path fails and no valid result is returned.
 - `DeviceModel.IsCurrentPlatformAtOrAfter("26C1") = False` on this machine, so HP keeps the graphics switcher on the legacy reboot-required path.
 
@@ -92,13 +94,10 @@ Interpretation:
 - For this laptop's OMEN UI:
   - `Integrated` maps to `UMAMode`
   - `Hybrid` maps to `Hybrid`
-- A live runtime query against `HP.Omen.Core.Model.Device.Models.GraphicsSwitcherHelper` on this machine returned:
-  - `SupportedModes = 6`
-  - `SupportedUMAmode = False`
-  - which means the platform does not currently advertise `UMA` support to HP's own helper layer
-- That explains why the PoC's original `Integrated` button did not stick after reboot:
-  - the app exposed `UMAMode`
-  - HP's own support helper says `UMAMode` is unsupported on this hardware/config
+- The earlier interpretation of `SupportedModes = 6` and `SupportedUMAmode = False` was not reliable for this machine.
+- Treat the observed modes as `Hybrid` and `UMAMode`/`Integrated`.
+- Do not use that helper readout alone to suppress `UMAMode` on this platform.
+- A live runtime query against `HP.Omen.Core.Model.Device.Models.GraphicsSwitcherHelper` on this machine returned `SupportedModes = 6` and `SupportedUMAmode = False`, but that readout should not be treated as proof of discrete support here.
 - The PoC should gate graphics buttons from HP's own support flags and only treat `BiosWmiCmd_Set(2, 82, ...)` as successful when `returnCode == 0`
 - The official graphics-switch UI applies the BIOS change and then triggers a restart prompt/flow:
   - [GraphicsSwitcherControlViewModel.cs](</C:/Users/dot/Downloads/hp5/HP.Omen.GraphicsSwitcherModule.ViewModels/GraphicsSwitcherControlViewModel.cs:711>)
@@ -221,8 +220,8 @@ Interpretation:
 - The desktop `UISync` channel exists, but it appears to be a refresh signal for HP's own desktop module rather than a full replacement for overlay init/update payloads.
 - Hidden modes should be treated as valid only when confirmed by BIOS readback or observable system behavior.
 - Graphics mode changes on this machine should be treated as post-reboot operations. Readback before reboot is not enough to prove the switch took effect.
-- Current known result: `Hybrid` readback is stable, while a standalone request to switch to `Discrete` failed with `255` and did not persist.
-- `UMA` should not be offered blindly. The app should first read HP's support flags and suppress unsupported graphics modes.
+- Current known result: `Hybrid` readback is stable, and the non-hybrid mode should be treated as `Integrated`/`UMA` on this platform.
+- `Graphics` options should be gated by confirmed readback/behavior, not by the earlier discrete-support interpretation.
 
 ## Current PoC Design
 

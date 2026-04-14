@@ -36,11 +36,16 @@ internal sealed class OmenPerformanceController : IDisposable
     private bool _extremeUnlocked = true;
     private bool _unleashVisible = true;
     private ThermalModeOnUI _thermalModeUiType = (ThermalModeOnUI)0;
-    private int _graphicsSupportedModes;
     private bool _graphicsSupportsUma;
     private bool _graphicsSupportsHybrid;
-    private bool _graphicsSupportsDiscrete;
+    private bool _graphicsModeSwitchSupported;
     private bool _graphicsNeedsReboot = true;
+    private byte _graphicsModeSwitchBits;
+    private bool _graphicsModeSwitchReadSucceeded;
+    private int _helperGraphicsSupportedModes = -1;
+    private bool _helperGraphicsSupportsUma;
+    private bool _helperGraphicsSupportsHybrid;
+    private bool _helperGraphicsSupportAvailable;
     private string _lastGraphicsRequestMode = string.Empty;
     private int? _lastGraphicsRequestReturnCode;
     private List<string> _supportModes = new List<string>();
@@ -182,7 +187,10 @@ internal sealed class OmenPerformanceController : IDisposable
         try
         {
             byte[] systemDesignData = await _omenBiosClient.GetSystemDesignDataAsync().ConfigureAwait(false);
-            RefreshGraphicsSupport();
+            SystemDesignDataInfo systemDesignDataInfo = await _omenBiosClient.GetSystemDesignDataInfoAsync().ConfigureAwait(false);
+            _graphicsModeSwitchBits = systemDesignDataInfo.RawGpuModeSwitch;
+            _graphicsModeSwitchReadSucceeded = systemDesignDataInfo.ReadSucceeded;
+            RefreshGraphicsSupportFromProbe(systemDesignDataInfo);
             builder.AppendLine("BIOS / Platform");
             builder.AppendLine("  SystemDesignData: " + ((systemDesignData != null && systemDesignData.Length > 0) ? BitConverter.ToString(systemDesignData) : "<empty>"));
             builder.AppendLine("  ShippingAdapterPowerRating: " + PowerControlHelper.ShippingAdapterPowerRating);
@@ -190,12 +198,24 @@ internal sealed class OmenPerformanceController : IDisposable
             builder.AppendLine("  IsSwFanControlSupport: " + PowerControlHelper.IsSwFanControlSupport);
             builder.AppendLine("  IsExtremeModeSupport: " + PowerControlHelper.IsExtremeModeSupport);
             builder.AppendLine("  IsExtremeModeUnlock: " + PowerControlHelper.IsExtremeModeUnlock);
+            builder.AppendLine("  GraphicsModeSwitchBits: 0x" + systemDesignDataInfo.RawGpuModeSwitch.ToString("X2"));
+            builder.AppendLine("  GraphicsModeSwitchReadSucceeded: " + systemDesignDataInfo.ReadSucceeded);
+            builder.AppendLine("  GraphicsModeSwitchSupported: " + systemDesignDataInfo.SupportsGraphicsSwitching);
+            builder.AppendLine("  GraphicsModeSwitchRawSlots: " + systemDesignDataInfo.RawGraphicsModeSlots);
+            builder.AppendLine("  GraphicsModeSwitchSlots: " + systemDesignDataInfo.GraphicsModeSlots);
+            builder.AppendLine("  GraphicsModeSwitchHasIntegratedSlot: " + systemDesignDataInfo.HasIntegratedSlot);
+            builder.AppendLine("  GraphicsModeSwitchHasHybridSlot: " + systemDesignDataInfo.HasHybridSlot);
+            builder.AppendLine("  GraphicsModeSwitchHasDedicatedSlot: " + systemDesignDataInfo.HasDedicatedSlot);
+            builder.AppendLine("  GraphicsModeSwitchHasOptimusSlot: " + systemDesignDataInfo.HasOptimusSlot);
+            builder.AppendLine("  HelperGraphicsSupportedModes: " + (_helperGraphicsSupportedModes >= 0 ? _helperGraphicsSupportedModes.ToString() : "<unavailable>"));
+            builder.AppendLine("  HelperGraphicsSupportAvailable: " + _helperGraphicsSupportAvailable);
+            builder.AppendLine("  HelperGraphicsSupportsHybrid: " + _helperGraphicsSupportsHybrid);
+            builder.AppendLine("  HelperGraphicsSupportsUma: " + _helperGraphicsSupportsUma);
             RefreshGraphicsMode();
             builder.AppendLine("  GraphicsMode: " + _currentGraphicsMode);
-            builder.AppendLine("  GraphicsSupportedModesRaw: " + _graphicsSupportedModes);
+            builder.AppendLine("  GraphicsModeSwitchSupported(State): " + _graphicsModeSwitchSupported);
             builder.AppendLine("  GraphicsSupportsHybrid: " + _graphicsSupportsHybrid);
-            builder.AppendLine("  GraphicsSupportsDiscrete: " + _graphicsSupportsDiscrete);
-            builder.AppendLine("  GraphicsSupportsUMA: " + _graphicsSupportsUma);
+            builder.AppendLine("  GraphicsSupportsUma: " + _graphicsSupportsUma);
             builder.AppendLine("  GraphicsNeedsReboot: " + _graphicsNeedsReboot);
             builder.AppendLine("  LastGraphicsRequestMode: " + (string.IsNullOrWhiteSpace(_lastGraphicsRequestMode) ? "<none>" : _lastGraphicsRequestMode));
             builder.AppendLine("  LastGraphicsRequestReturnCode: " + (_lastGraphicsRequestReturnCode.HasValue ? _lastGraphicsRequestReturnCode.Value.ToString() : "<none>"));
@@ -299,7 +319,6 @@ internal sealed class OmenPerformanceController : IDisposable
     {
         try
         {
-            RefreshGraphicsSupport();
             _lastGraphicsRequestMode = mode.ToString();
             _lastGraphicsRequestReturnCode = null;
 
@@ -334,10 +353,11 @@ internal sealed class OmenPerformanceController : IDisposable
             CurrentThermalMode = _currentThermalMode.ToString(),
             CurrentLegacyFanMode = _currentLegacyFanMode.ToString(),
             CurrentGraphicsMode = _currentGraphicsMode.ToString(),
+            GraphicsModeSwitchSupported = _graphicsModeSwitchSupported,
             GraphicsSupportsUma = _graphicsSupportsUma,
             GraphicsSupportsHybrid = _graphicsSupportsHybrid,
-            GraphicsSupportsDiscrete = _graphicsSupportsDiscrete,
             GraphicsNeedsReboot = _graphicsNeedsReboot,
+            GraphicsModeSwitchBits = _graphicsModeSwitchBits,
             LastGraphicsRequestMode = _lastGraphicsRequestMode,
             LastGraphicsRequestReturnCode = _lastGraphicsRequestReturnCode,
             ExtremeUnlocked = _extremeUnlocked,
@@ -572,38 +592,108 @@ internal sealed class OmenPerformanceController : IDisposable
     {
         try
         {
-            Assembly assembly = TryLoadHpAssembly("HP.Omen.Core.Model.Device.dll");
-            Type helperType = assembly?.GetType("HP.Omen.Core.Model.Device.Models.GraphicsSwitcherHelper");
-            Type deviceModelType = assembly?.GetType("HP.Omen.Core.Model.Device.Models.DeviceModel");
-
-            int supportedModes = GetStaticValue<int>(helperType, "SupportedModes", 0);
-            bool supportsUma = GetStaticValue<bool>(helperType, "SupportedUMAmode", false);
-            bool platformAtOrAfter26C1 = InvokeStaticBool(deviceModelType, "IsCurrentPlatformAtOrAfter", "26C1");
-
-            _graphicsSupportedModes = supportedModes;
-            _graphicsSupportsHybrid = (supportedModes & 2) != 0;
-            _graphicsSupportsDiscrete = (supportedModes & 4) != 0;
-            _graphicsSupportsUma = supportsUma;
-            _graphicsNeedsReboot = !platformAtOrAfter26C1;
+            SystemDesignDataInfo systemDesignDataInfo = _omenBiosClient.GetSystemDesignDataInfoAsync().GetAwaiter().GetResult();
+            _graphicsModeSwitchBits = systemDesignDataInfo.RawGpuModeSwitch;
+            _graphicsModeSwitchReadSucceeded = systemDesignDataInfo.ReadSucceeded;
+            RefreshGraphicsSupportFromProbe(systemDesignDataInfo);
         }
         catch (Exception ex)
         {
             Log("Graphics support read failed: " + ex.Message);
+            _graphicsModeSwitchBits = 0;
+            _graphicsModeSwitchReadSucceeded = false;
+            RefreshGraphicsSupportFromFallback();
         }
     }
 
-    private bool IsGraphicsModeSupported(GraphicsSwitcherMode mode)
+    private void RefreshGraphicsSupportFromProbe(SystemDesignDataInfo systemDesignDataInfo)
     {
-        switch (mode)
+        if (systemDesignDataInfo.ReadSucceeded && systemDesignDataInfo.SupportsGraphicsSwitching)
         {
-            case GraphicsSwitcherMode.Hybrid:
-                return _graphicsSupportsHybrid;
-            case GraphicsSwitcherMode.Discrete:
-                return _graphicsSupportsDiscrete;
-            case GraphicsSwitcherMode.UMAMode:
-                return _graphicsSupportsUma;
-            default:
+            _graphicsModeSwitchSupported = true;
+            _graphicsSupportsHybrid = true;
+            _graphicsSupportsUma = true;
+            _graphicsNeedsReboot = true;
+            _helperGraphicsSupportAvailable = false;
+            _helperGraphicsSupportedModes = -1;
+            _helperGraphicsSupportsHybrid = false;
+            _helperGraphicsSupportsUma = false;
+            return;
+        }
+
+        if (TryReadHelperGraphicsSupport(out int supportedModes, out bool supportsHybrid, out bool supportsUma))
+        {
+            _helperGraphicsSupportAvailable = true;
+            _helperGraphicsSupportedModes = supportedModes;
+            _helperGraphicsSupportsHybrid = supportsHybrid;
+            _helperGraphicsSupportsUma = supportsUma;
+
+            bool helperSupportsGraphicsSwitching = supportedModes > 0 || supportsHybrid || supportsUma;
+            _graphicsModeSwitchSupported = helperSupportsGraphicsSwitching;
+            _graphicsSupportsHybrid = helperSupportsGraphicsSwitching;
+            _graphicsSupportsUma = helperSupportsGraphicsSwitching;
+            _graphicsNeedsReboot = true;
+
+            Log("Graphics support BIOS probe was ambiguous; using HP helper fallback for button gating (SupportedModes=" + supportedModes + ", SupportedUMAmode=" + supportsUma + ").");
+            return;
+        }
+
+        _helperGraphicsSupportAvailable = false;
+        _helperGraphicsSupportedModes = -1;
+        _helperGraphicsSupportsHybrid = false;
+        _helperGraphicsSupportsUma = false;
+        _graphicsModeSwitchSupported = false;
+        _graphicsSupportsHybrid = false;
+        _graphicsSupportsUma = false;
+        _graphicsNeedsReboot = false;
+    }
+
+    private void RefreshGraphicsSupportFromFallback()
+    {
+        if (TryReadHelperGraphicsSupport(out int supportedModes, out bool supportsHybrid, out bool supportsUma))
+        {
+            _helperGraphicsSupportAvailable = true;
+            _helperGraphicsSupportedModes = supportedModes;
+            _helperGraphicsSupportsHybrid = supportsHybrid;
+            _helperGraphicsSupportsUma = supportsUma;
+
+            bool helperSupportsGraphicsSwitching = supportedModes > 0 || supportsHybrid || supportsUma;
+            _graphicsModeSwitchSupported = helperSupportsGraphicsSwitching;
+            _graphicsSupportsHybrid = helperSupportsGraphicsSwitching;
+            _graphicsSupportsUma = helperSupportsGraphicsSwitching;
+            _graphicsNeedsReboot = true;
+            return;
+        }
+
+        _graphicsModeSwitchSupported = false;
+        _graphicsSupportsHybrid = false;
+        _graphicsSupportsUma = false;
+        _graphicsNeedsReboot = false;
+    }
+
+    private bool TryReadHelperGraphicsSupport(out int supportedModes, out bool supportsHybrid, out bool supportsUma)
+    {
+        supportedModes = -1;
+        supportsHybrid = false;
+        supportsUma = false;
+
+        try
+        {
+            Assembly assembly = TryLoadHpAssembly("HP.Omen.Core.Model.Device.dll");
+            Type helperType = assembly?.GetType("HP.Omen.Core.Model.Device.Models.GraphicsSwitcherHelper");
+            if (helperType == null)
+            {
                 return false;
+            }
+
+            supportedModes = GetStaticValue<int>(helperType, "SupportedModes", -1);
+            supportsHybrid = (supportedModes & 0x02) != 0;
+            supportsUma = GetStaticValue<bool>(helperType, "SupportedUMAmode", false);
+            return supportedModes >= 0;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -676,27 +766,17 @@ internal sealed class OmenPerformanceController : IDisposable
         return fallback;
     }
 
-    private static bool InvokeStaticBool(Type type, string methodName, string argument)
+    private bool IsGraphicsModeSupported(GraphicsSwitcherMode mode)
     {
-        try
+        switch (mode)
         {
-            MethodInfo method = type?.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
-            if (method == null)
-            {
+            case GraphicsSwitcherMode.Hybrid:
+                return _graphicsModeSwitchSupported;
+            case GraphicsSwitcherMode.UMAMode:
+                return _graphicsModeSwitchSupported;
+            default:
                 return false;
-            }
-
-            object value = method.Invoke(null, new object[] { argument });
-            if (value is bool result)
-            {
-                return result;
-            }
         }
-        catch
-        {
-        }
-
-        return false;
     }
 
     private void Log(string message)

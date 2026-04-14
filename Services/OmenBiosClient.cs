@@ -2,6 +2,7 @@ using System;
 using System.Management;
 using System.Threading.Tasks;
 using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
+using OmenHelper.Models;
 
 namespace OmenHelper.Services;
 
@@ -175,6 +176,21 @@ internal sealed class OmenBiosClient : IDisposable
         {
             BiosWmiResult result = Execute(131080, 40, null, 128);
             return result.ExecuteResult ? result.ReturnData : Array.Empty<byte>();
+        });
+    }
+
+    public Task<SystemDesignDataInfo> GetSystemDesignDataInfoAsync()
+    {
+        return Task.Run(() =>
+        {
+            BiosWmiResult result = Execute(131080, 40, null, 128);
+            if (!result.ExecuteResult || result.ReturnData.Length < 9)
+            {
+                return SystemDesignDataInfo.Empty;
+            }
+
+            byte rawGpuModeSwitch = result.ReturnData[7];
+            return SystemDesignDataInfo.FromRaw(rawGpuModeSwitch, true);
         });
     }
 
