@@ -716,6 +716,7 @@ internal sealed class OmenPerformanceController : IDisposable
         try
         {
             byte[] payload = BuildFanMinimumBlobForCurrentMode();
+            Log("Fan minimum blob write request (source=" + source + ", mode=" + FormatPerformanceMode(_currentMode) + ", minRpm=" + GetFanMinimumRpmForMode(_currentMode) + ", payload=" + FormatInputData(payload) + ")");
             OmenBiosClient.BiosWmiResult result = await _omenBiosClient.SetPerformanceStatusBlobAsync(payload).ConfigureAwait(false);
 
             byte[] previousBlob;
@@ -740,6 +741,7 @@ internal sealed class OmenPerformanceController : IDisposable
                 ", mode=" + FormatPerformanceMode(_currentMode) +
                 ", minRpm=" + GetFanMinimumRpmForMode(_currentMode) +
                 ", rc=" + result.ReturnCode);
+            Log("Fan minimum blob write result (source=" + source + ", exec=" + result.ExecuteResult + ", rc=" + result.ReturnCode + ", out=" + FormatReturnData(result.ReturnData) + ")");
 
             return result.ExecuteResult && result.ReturnCode == 0;
         }
