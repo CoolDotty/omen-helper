@@ -8,11 +8,17 @@ internal sealed class PerformanceControlState
 
     public bool Available { get; set; }
 
+    public bool CurrentModeKnown { get; set; }
+
     public string CurrentMode { get; set; }
+
+    public bool CurrentModeIsInferred { get; set; }
 
     public string CurrentThermalMode { get; set; }
 
     public string CurrentLegacyFanMode { get; set; }
+
+    public int CurrentFanMinimumRpm { get; set; }
 
     public string CurrentGraphicsMode { get; set; }
 

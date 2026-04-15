@@ -81,16 +81,13 @@ function Flush-IfComplete([string]$key) {
   $state = $statesByThread[$key]
 
   if ($null -ne $state.cmd -and $null -ne $state.type -and $null -ne $state.rc) {
-    $inputShort = $state.input
-    if ($null -ne $inputShort -and $inputShort.Length -gt 120) {
-      $inputShort = $inputShort.Substring(0, 120) + "..."
-    }
+    $inputText = $state.input
 
     $line = "BIOS"
     if ($ShowThread) { $line += " [$key]" }
     if ($ShowTimestamp -and $null -ne $state.ts) { $line += " $($state.ts)" }
     $line += " cmd=$($state.cmd) type=$($state.type) in=$($state.inSz) out=$($state.outSz) rc=$($state.rc)"
-    if ($null -ne $inputShort) { $line += " input=[$inputShort]" }
+    if ($null -ne $inputText) { $line += " input(len=" + $inputText.Length + ")=[" + $inputText + "]" }
     Write-Host $line
 
     $statesByThread.Remove($key) | Out-Null

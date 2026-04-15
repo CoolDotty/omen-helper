@@ -2,8 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
-using System.Reflection;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
@@ -24,12 +23,15 @@ internal sealed class OmenPerformanceController : IDisposable
     private readonly int _sessionId;
     private readonly OmenBiosClient _omenBiosClient = new OmenBiosClient();
     private readonly object _diagnosticsSync = new object();
+    private readonly string _performanceModeStatePath;
 
     private bool _started;
     private bool _disposed;
-    private bool _initialized = true;
-    private bool _available = true;
+    private bool _initialized;
+    private bool _available;
     private PerformanceMode _currentMode = PerformanceMode.Default;
+    private bool _currentModeKnown;
+    private bool _currentModeIsInferred;
     private ThermalControl _currentThermalMode = ThermalControl.Auto;
     private FanMode _currentLegacyFanMode = FanMode.Normal;
     private GraphicsSwitcherMode _currentGraphicsMode = GraphicsSwitcherMode.Unknown;
@@ -39,13 +41,9 @@ internal sealed class OmenPerformanceController : IDisposable
     private bool _graphicsSupportsUma;
     private bool _graphicsSupportsHybrid;
     private bool _graphicsModeSwitchSupported;
-    private bool _graphicsNeedsReboot = true;
+    private bool _graphicsNeedsReboot;
     private byte _graphicsModeSwitchBits;
     private bool _graphicsModeSwitchReadSucceeded;
-    private int _helperGraphicsSupportedModes = -1;
-    private bool _helperGraphicsSupportsUma;
-    private bool _helperGraphicsSupportsHybrid;
-    private bool _helperGraphicsSupportAvailable;
     private string _lastGraphicsRequestMode = string.Empty;
     private int? _lastGraphicsRequestReturnCode;
     private List<string> _supportModes = new List<string>();
@@ -59,6 +57,22 @@ internal sealed class OmenPerformanceController : IDisposable
     private bool? _lastPerfType41ExecuteResult;
     private int? _lastMaxFanReturnCode;
     private bool? _lastMaxFanExecuteResult;
+    private byte[] _lastPerformanceStatusBlob = Array.Empty<byte>();
+    private byte[] _previousPerformanceStatusBlob = Array.Empty<byte>();
+    private string _lastPerformanceStatusBlobHash = string.Empty;
+    private string _previousPerformanceStatusBlobHash = string.Empty;
+    private string _lastPerformanceStatusBlobPreview = string.Empty;
+    private int? _lastPerformanceStatusBlobChangedBytes;
+    private int? _lastPerformanceStatusBlobReturnCode;
+    private bool? _lastPerformanceStatusBlobExecuteResult;
+    private byte[] _lastFanTargetBlob = Array.Empty<byte>();
+    private byte[] _previousFanTargetBlob = Array.Empty<byte>();
+    private string _lastFanTargetBlobHash = string.Empty;
+    private string _previousFanTargetBlobHash = string.Empty;
+    private string _lastFanTargetBlobPreview = string.Empty;
+    private int? _lastFanTargetBlobChangedBytes;
+    private int? _lastFanTargetBlobReturnCode;
+    private bool? _lastFanTargetBlobExecuteResult;
     private readonly Queue<string> _recentEvents = new Queue<string>();
 
     public event EventHandler<PerformanceControlState> StateChanged;
@@ -68,6 +82,10 @@ internal sealed class OmenPerformanceController : IDisposable
     public OmenPerformanceController()
     {
         _sessionId = Process.GetCurrentProcess().SessionId;
+        _performanceModeStatePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "OmenHelper",
+            "performance-mode.txt");
     }
 
     public void Start()
@@ -90,18 +108,17 @@ internal sealed class OmenPerformanceController : IDisposable
 
         _supportModes = new List<string>
         {
-            nameof(PerformanceMode.Default),
-            nameof(PerformanceMode.Performance),
-            nameof(PerformanceMode.Eco),
+            FormatPerformanceMode(PerformanceMode.Default),
+            FormatPerformanceMode(PerformanceMode.Performance),
+            FormatPerformanceMode(PerformanceMode.Eco),
             "Unleashed"
         };
+        _currentModeKnown = false;
+        LoadRememberedPerformanceMode();
 
         _started = true;
 
         _ = RequestInitializationAsync();
-        RefreshGraphicsMode();
-        RefreshGraphicsSupport();
-        RaiseStateChanged();
 
         Log("Started control path: BIOS/WMI only. HP pipe support removed.");
         Log("Process: " + (Environment.Is64BitProcess ? "x64" : "x86") + ", OS: " + (Environment.Is64BitOperatingSystem ? "x64" : "x86"));
@@ -140,9 +157,11 @@ internal sealed class OmenPerformanceController : IDisposable
             bool maxFanEnabled = await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false);
             _currentLegacyFanMode = maxFanEnabled ? FanMode.Turbo : FanMode.Normal;
             _currentThermalMode = maxFanEnabled ? ThermalControl.Max : ThermalControl.Auto;
+            RefreshGraphicsMode();
+            RefreshGraphicsSupport();
+            await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
             _initialized = true;
             _available = true;
-            RefreshGraphicsMode();
             TrackEvent("Firmware", "Read max fan=" + (maxFanEnabled ? "On" : "Off"));
             RaiseStateChanged();
         }
@@ -166,9 +185,11 @@ internal sealed class OmenPerformanceController : IDisposable
         builder.AppendLine();
 
         builder.AppendLine("Current State");
-        builder.AppendLine("  Mode: " + _currentMode);
+        builder.AppendLine("  Mode: " + DescribeCurrentMode());
+        builder.AppendLine("  Mode Inferred: " + _currentModeIsInferred);
         builder.AppendLine("  Thermal: " + _currentThermalMode);
         builder.AppendLine("  Legacy Fan: " + _currentLegacyFanMode);
+        builder.AppendLine("  Fan Minimum RPM: " + GetFanMinimumRpmForMode(_currentMode));
         builder.AppendLine("  Graphics: " + _currentGraphicsMode);
         if (!string.IsNullOrWhiteSpace(_lastPerformanceRequestMode))
         {
@@ -178,11 +199,24 @@ internal sealed class OmenPerformanceController : IDisposable
             builder.AppendLine("    BIOS 131080/41 exec: " + (_lastPerfType41ExecuteResult.HasValue ? _lastPerfType41ExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastPerfType41ReturnCode.HasValue ? _lastPerfType41ReturnCode.Value.ToString() : "<none>"));
         }
         builder.AppendLine("  Last MaxFan exec: " + (_lastMaxFanExecuteResult.HasValue ? _lastMaxFanExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastMaxFanReturnCode.HasValue ? _lastMaxFanReturnCode.Value.ToString() : "<none>"));
+        builder.AppendLine("  Performance Status Blob exec: " + (_lastPerformanceStatusBlobExecuteResult.HasValue ? _lastPerformanceStatusBlobExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastPerformanceStatusBlobReturnCode.HasValue ? _lastPerformanceStatusBlobReturnCode.Value.ToString() : "<none>"));
+        builder.AppendLine("  Performance Status Blob hash: " + (string.IsNullOrWhiteSpace(_lastPerformanceStatusBlobHash) ? "<none>" : _lastPerformanceStatusBlobHash));
+        builder.AppendLine("  Performance Status Blob first 32 bytes: " + (string.IsNullOrWhiteSpace(_lastPerformanceStatusBlobPreview) ? "<none>" : _lastPerformanceStatusBlobPreview));
+        builder.AppendLine("  Performance Status Blob sensors: " + DescribePerformanceStatusBlobSensors(_lastPerformanceStatusBlob));
+        builder.AppendLine("  Performance Status Blob changed bytes: " + (_lastPerformanceStatusBlobChangedBytes.HasValue ? _lastPerformanceStatusBlobChangedBytes.Value.ToString() : "<n/a>"));
+        builder.AppendLine("  Performance Status Blob previous hash: " + (string.IsNullOrWhiteSpace(_previousPerformanceStatusBlobHash) ? "<none>" : _previousPerformanceStatusBlobHash));
+        builder.AppendLine("  Fan Minimum Blob (BIOS 131080/46) exec: " + (_lastFanTargetBlobExecuteResult.HasValue ? _lastFanTargetBlobExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastFanTargetBlobReturnCode.HasValue ? _lastFanTargetBlobReturnCode.Value.ToString() : "<none>"));
+        builder.AppendLine("  Fan Minimum Blob (BIOS 131080/46) hash: " + (string.IsNullOrWhiteSpace(_lastFanTargetBlobHash) ? "<none>" : _lastFanTargetBlobHash));
+        builder.AppendLine("  Fan Minimum Blob (BIOS 131080/46) preview: " + (string.IsNullOrWhiteSpace(_lastFanTargetBlobPreview) ? "<none>" : _lastFanTargetBlobPreview));
+        builder.AppendLine("  Fan Minimum Blob (BIOS 131080/46) changed bytes: " + (_lastFanTargetBlobChangedBytes.HasValue ? _lastFanTargetBlobChangedBytes.Value.ToString() : "<n/a>"));
+        builder.AppendLine("  Fan Minimum Blob (BIOS 131080/46) previous hash: " + (string.IsNullOrWhiteSpace(_previousFanTargetBlobHash) ? "<none>" : _previousFanTargetBlobHash));
         builder.AppendLine("  Thermal UI Type: " + _thermalModeUiType);
         builder.AppendLine("  Extreme Unlocked: " + _extremeUnlocked);
         builder.AppendLine("  Unleash Visible: " + _unleashVisible);
         builder.AppendLine("  Support Modes: " + string.Join(", ", _supportModes));
         builder.AppendLine();
+
+        await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
 
         try
         {
@@ -191,6 +225,7 @@ internal sealed class OmenPerformanceController : IDisposable
             _graphicsModeSwitchBits = systemDesignDataInfo.RawGpuModeSwitch;
             _graphicsModeSwitchReadSucceeded = systemDesignDataInfo.ReadSucceeded;
             RefreshGraphicsSupportFromProbe(systemDesignDataInfo);
+            RaiseStateChanged();
             builder.AppendLine("BIOS / Platform");
             builder.AppendLine("  SystemDesignData: " + ((systemDesignData != null && systemDesignData.Length > 0) ? BitConverter.ToString(systemDesignData) : "<empty>"));
             builder.AppendLine("  ShippingAdapterPowerRating: " + PowerControlHelper.ShippingAdapterPowerRating);
@@ -207,10 +242,6 @@ internal sealed class OmenPerformanceController : IDisposable
             builder.AppendLine("  GraphicsModeSwitchHasHybridSlot: " + systemDesignDataInfo.HasHybridSlot);
             builder.AppendLine("  GraphicsModeSwitchHasDedicatedSlot: " + systemDesignDataInfo.HasDedicatedSlot);
             builder.AppendLine("  GraphicsModeSwitchHasOptimusSlot: " + systemDesignDataInfo.HasOptimusSlot);
-            builder.AppendLine("  HelperGraphicsSupportedModes: " + (_helperGraphicsSupportedModes >= 0 ? _helperGraphicsSupportedModes.ToString() : "<unavailable>"));
-            builder.AppendLine("  HelperGraphicsSupportAvailable: " + _helperGraphicsSupportAvailable);
-            builder.AppendLine("  HelperGraphicsSupportsHybrid: " + _helperGraphicsSupportsHybrid);
-            builder.AppendLine("  HelperGraphicsSupportsUma: " + _helperGraphicsSupportsUma);
             RefreshGraphicsMode();
             builder.AppendLine("  GraphicsMode: " + _currentGraphicsMode);
             builder.AppendLine("  GraphicsModeSwitchSupported(State): " + _graphicsModeSwitchSupported);
@@ -257,7 +288,9 @@ internal sealed class OmenPerformanceController : IDisposable
 
     public async Task SetPerformanceModeAsync(PerformanceMode mode)
     {
-        _lastPerformanceRequestMode = mode.ToString();
+        ThermalControl thermalControlToRestore = _currentThermalMode;
+
+        _lastPerformanceRequestMode = FormatPerformanceMode(mode);
         _lastPerformanceRequestPath = string.Empty;
         _lastPerfType26ReturnCode = null;
         _lastPerfType26ExecuteResult = null;
@@ -270,7 +303,23 @@ internal sealed class OmenPerformanceController : IDisposable
         {
             _lastPerformanceRequestPath = "FirmwareThruDriver";
             _currentMode = mode;
-            await RefreshThermalFromMaxFanAsync().ConfigureAwait(false);
+            _currentModeIsInferred = true;
+            SaveRememberedPerformanceMode(mode);
+
+            bool thermalRestoreOk = await TrySetThermalModeStateAsync(thermalControlToRestore).ConfigureAwait(false);
+            if (!thermalRestoreOk && thermalControlToRestore != ThermalControl.Manual)
+            {
+                Log("Thermal mode restore after performance mode change failed.");
+            }
+
+            bool fanTargetOk = await ApplyFanMinimumBlobAsync("performance mode change").ConfigureAwait(false);
+            if (!fanTargetOk)
+            {
+                Log("Fan target blob restore after performance mode change failed.");
+            }
+
+            await Task.Delay(250).ConfigureAwait(false);
+            await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
             RaiseStateChanged();
             return;
         }
@@ -281,22 +330,24 @@ internal sealed class OmenPerformanceController : IDisposable
 
     public async Task SetThermalModeAsync(ThermalControl thermalControl)
     {
-        if (thermalControl == ThermalControl.Manual)
-        {
-            Log("ThermalControl.Manual is not implemented (would require custom fan curve control).");
-            return;
-        }
-
-        bool enableMaxFan = thermalControl == ThermalControl.Max;
-        bool success = await TrySetMaxFanAsync(enableMaxFan).ConfigureAwait(false);
+        bool success = await TrySetThermalModeStateAsync(thermalControl).ConfigureAwait(false);
         if (!success)
         {
-            Log("Thermal mode change failed (firmware only).");
+            if (thermalControl != ThermalControl.Manual)
+            {
+                Log("Thermal mode change failed (firmware only).");
+            }
+
             return;
         }
 
-        _currentThermalMode = thermalControl;
-        _currentLegacyFanMode = enableMaxFan ? FanMode.Turbo : FanMode.Normal;
+        bool fanTargetOk = await ApplyFanMinimumBlobAsync("thermal mode change").ConfigureAwait(false);
+        if (!fanTargetOk)
+        {
+            Log("Fan target blob restore after thermal mode change failed.");
+        }
+
+        await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
         RaiseStateChanged();
     }
 
@@ -312,6 +363,14 @@ internal sealed class OmenPerformanceController : IDisposable
 
         _currentLegacyFanMode = mode;
         _currentThermalMode = enableMaxFan ? ThermalControl.Max : _currentThermalMode == ThermalControl.Max ? ThermalControl.Auto : _currentThermalMode;
+
+        bool fanTargetOk = await ApplyFanMinimumBlobAsync("legacy fan mode change").ConfigureAwait(false);
+        if (!fanTargetOk)
+        {
+            Log("Fan target blob restore after legacy fan mode change failed.");
+        }
+
+        await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
         RaiseStateChanged();
     }
 
@@ -349,9 +408,12 @@ internal sealed class OmenPerformanceController : IDisposable
         {
             Initialized = _initialized,
             Available = _available,
-            CurrentMode = _currentMode.ToString(),
+            CurrentModeKnown = _currentModeKnown,
+            CurrentMode = DescribeCurrentMode(),
+            CurrentModeIsInferred = _currentModeIsInferred,
             CurrentThermalMode = _currentThermalMode.ToString(),
             CurrentLegacyFanMode = _currentLegacyFanMode.ToString(),
+            CurrentFanMinimumRpm = GetFanMinimumRpmForMode(_currentMode),
             CurrentGraphicsMode = _currentGraphicsMode.ToString(),
             GraphicsModeSwitchSupported = _graphicsModeSwitchSupported,
             GraphicsSupportsUma = _graphicsSupportsUma,
@@ -370,6 +432,92 @@ internal sealed class OmenPerformanceController : IDisposable
     private static bool IsUnleashedMode(PerformanceMode mode)
     {
         return mode == PerformanceMode.Extreme || (int)mode == 4;
+    }
+
+    private static string FormatPerformanceMode(PerformanceMode mode)
+    {
+        if (mode == PerformanceMode.Default)
+        {
+            return "Balanced";
+        }
+
+        if (mode == PerformanceMode.Extreme)
+        {
+            return "Unleashed";
+        }
+
+        return mode.ToString();
+    }
+
+    private string DescribeCurrentMode()
+    {
+        if (_currentModeKnown || _currentModeIsInferred)
+        {
+            return FormatPerformanceMode(_currentMode);
+        }
+
+        return "Unknown";
+    }
+
+    private void LoadRememberedPerformanceMode()
+    {
+        try
+        {
+            if (!File.Exists(_performanceModeStatePath))
+            {
+                return;
+            }
+
+            string persisted = File.ReadAllText(_performanceModeStatePath).Trim();
+            if (!TryParseRememberedPerformanceMode(persisted, out PerformanceMode mode))
+            {
+                Log("Ignored persisted performance mode value: " + persisted);
+                return;
+            }
+
+            _currentMode = mode;
+            _currentModeIsInferred = true;
+            Log("Loaded remembered performance mode: " + FormatPerformanceMode(mode));
+        }
+        catch (Exception ex)
+        {
+            Log("Performance mode memory load failed: " + ex.Message);
+        }
+    }
+
+    private void SaveRememberedPerformanceMode(PerformanceMode mode)
+    {
+        try
+        {
+            string directory = Path.GetDirectoryName(_performanceModeStatePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(_performanceModeStatePath, mode.ToString());
+        }
+        catch (Exception ex)
+        {
+            Log("Performance mode memory save failed: " + ex.Message);
+        }
+    }
+
+    private static bool TryParseRememberedPerformanceMode(string value, out PerformanceMode mode)
+    {
+        if (string.Equals(value, "Balanced", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = PerformanceMode.Default;
+            return true;
+        }
+
+        if (string.Equals(value, "Unleashed", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = PerformanceMode.Extreme;
+            return true;
+        }
+
+        return Enum.TryParse(value, true, out mode);
     }
 
     private static byte MapPerformanceModeToType26Value(PerformanceMode mode)
@@ -537,7 +685,7 @@ internal sealed class OmenPerformanceController : IDisposable
             returnDataSize: returnDataSize).ConfigureAwait(false);
 
         onResult?.Invoke(result);
-        Log(logPrefix + ": cmd=" + command + " type=" + commandType + " input=[" + string.Join(",", payload ?? Array.Empty<byte>()) + "] exec=" + result.ExecuteResult + " rc=" + result.ReturnCode + " out=" + FormatReturnData(result.ReturnData));
+        Log(logPrefix + ": cmd=" + command + " type=" + commandType + " input=" + FormatInputData(payload) + " exec=" + result.ExecuteResult + " rc=" + result.ReturnCode + " out=" + FormatReturnData(result.ReturnData));
 
         if (result.ExecuteResult && result.ReturnCode == 0)
         {
@@ -561,6 +709,102 @@ internal sealed class OmenPerformanceController : IDisposable
         {
             Log("Firmware max fan refresh failed: " + ex.Message);
         }
+    }
+
+    private async Task<bool> ApplyFanMinimumBlobAsync(string source)
+    {
+        try
+        {
+            byte[] payload = BuildFanMinimumBlobForCurrentMode();
+            OmenBiosClient.BiosWmiResult result = await _omenBiosClient.SetPerformanceStatusBlobAsync(payload).ConfigureAwait(false);
+
+            byte[] previousBlob;
+            string previousHash;
+            lock (_diagnosticsSync)
+            {
+                previousBlob = _lastFanTargetBlob ?? Array.Empty<byte>();
+                previousHash = _lastFanTargetBlobHash;
+                _previousFanTargetBlob = previousBlob;
+                _previousFanTargetBlobHash = previousHash;
+                _lastFanTargetBlob = payload;
+                _lastFanTargetBlobHash = ComputeSha256Hex(payload);
+                _lastFanTargetBlobPreview = FormatBytePreview(payload, 32);
+                _lastFanTargetBlobChangedBytes = CountDifferentBytes(previousBlob, payload);
+                _lastFanTargetBlobReturnCode = result.ReturnCode;
+                _lastFanTargetBlobExecuteResult = result.ExecuteResult;
+            }
+
+            TrackEvent(
+                "Firmware",
+                "Write fan minimum blob source=" + source +
+                ", mode=" + FormatPerformanceMode(_currentMode) +
+                ", minRpm=" + GetFanMinimumRpmForMode(_currentMode) +
+                ", rc=" + result.ReturnCode);
+
+            return result.ExecuteResult && result.ReturnCode == 0;
+        }
+        catch (Exception ex)
+        {
+            Log("Fan target blob write failed: " + ex.Message);
+            return false;
+        }
+    }
+
+    private async Task<bool> TrySetThermalModeStateAsync(ThermalControl thermalControl)
+    {
+        if (thermalControl == ThermalControl.Manual)
+        {
+            Log("ThermalControl.Manual is not implemented (would require custom fan curve control).");
+            return false;
+        }
+
+        bool enableMaxFan = thermalControl == ThermalControl.Max;
+        bool success = await TrySetMaxFanAsync(enableMaxFan).ConfigureAwait(false);
+        if (!success)
+        {
+            return false;
+        }
+
+        _currentThermalMode = thermalControl;
+        _currentLegacyFanMode = enableMaxFan ? FanMode.Turbo : FanMode.Normal;
+        return true;
+    }
+
+    private byte[] BuildFanMinimumBlobForCurrentMode()
+    {
+        int minimumRpm = GetFanMinimumRpmForMode(_currentMode);
+        byte minimumValue = (byte)Math.Max(0, Math.Min(255, minimumRpm / 100));
+        byte[] payload = new byte[128];
+        payload[0] = minimumValue;
+        payload[1] = minimumValue;
+        return payload;
+    }
+
+    private static int GetFanMinimumRpmForMode(PerformanceMode mode)
+    {
+        switch (mode)
+        {
+            case PerformanceMode.Eco:
+                return 0;
+            case PerformanceMode.Performance:
+            case PerformanceMode.Extreme:
+                return 2800;
+            case PerformanceMode.Default:
+            default:
+                return 2200;
+        }
+    }
+
+    private static string FormatInputData(byte[] data)
+    {
+        if (data == null || data.Length == 0)
+        {
+            return "<empty>";
+        }
+
+        int take = Math.Min(16, data.Length);
+        string prefix = BitConverter.ToString(data, 0, take);
+        return data.Length <= take ? prefix : prefix + "...(len=" + data.Length + ")";
     }
 
     private static string FormatReturnData(byte[] data)
@@ -588,6 +832,43 @@ internal sealed class OmenPerformanceController : IDisposable
         }
     }
 
+    private async Task RefreshPerformanceStatusBlobAsync()
+    {
+        try
+        {
+            OmenBiosClient.BiosWmiResult result = await _omenBiosClient.GetPerformanceStatusBlobAsync().ConfigureAwait(false);
+            byte[] blob = result.ExecuteResult && result.ReturnCode == 0
+                ? (result.ReturnData ?? Array.Empty<byte>())
+                : Array.Empty<byte>();
+
+            byte[] previousBlob;
+            string previousHash;
+            lock (_diagnosticsSync)
+            {
+                previousBlob = _lastPerformanceStatusBlob ?? Array.Empty<byte>();
+                previousHash = _lastPerformanceStatusBlobHash;
+                _previousPerformanceStatusBlob = previousBlob;
+                _previousPerformanceStatusBlobHash = previousHash;
+                _lastPerformanceStatusBlob = blob;
+                _lastPerformanceStatusBlobHash = ComputeSha256Hex(blob);
+                _lastPerformanceStatusBlobPreview = FormatBytePreview(blob, 32);
+                _lastPerformanceStatusBlobChangedBytes = CountDifferentBytes(previousBlob, blob);
+                _lastPerformanceStatusBlobReturnCode = result.ReturnCode;
+                _lastPerformanceStatusBlobExecuteResult = result.ExecuteResult;
+            }
+
+            TrackEvent(
+                "Firmware",
+                "Read performance status blob hash=" + _lastPerformanceStatusBlobHash +
+                ", changedBytes=" + (_lastPerformanceStatusBlobChangedBytes.HasValue ? _lastPerformanceStatusBlobChangedBytes.Value.ToString() : "<n/a>") +
+                ", rc=" + result.ReturnCode);
+        }
+        catch (Exception ex)
+        {
+            Log("Performance status blob read failed: " + ex.Message);
+        }
+    }
+
     private void RefreshGraphicsSupport()
     {
         try
@@ -596,6 +877,12 @@ internal sealed class OmenPerformanceController : IDisposable
             _graphicsModeSwitchBits = systemDesignDataInfo.RawGpuModeSwitch;
             _graphicsModeSwitchReadSucceeded = systemDesignDataInfo.ReadSucceeded;
             RefreshGraphicsSupportFromProbe(systemDesignDataInfo);
+            Log(
+                "Graphics support refresh: BIOS bits=0x" + _graphicsModeSwitchBits.ToString("X2") +
+                ", readSucceeded=" + _graphicsModeSwitchReadSucceeded +
+                ", supported=" + _graphicsModeSwitchSupported +
+                ", uma=" + _graphicsSupportsUma +
+                ", hybrid=" + _graphicsSupportsHybrid + ".");
         }
         catch (Exception ex)
         {
@@ -603,6 +890,7 @@ internal sealed class OmenPerformanceController : IDisposable
             _graphicsModeSwitchBits = 0;
             _graphicsModeSwitchReadSucceeded = false;
             RefreshGraphicsSupportFromFallback();
+            Log("Graphics support refresh: BIOS bits=0x00, readSucceeded=False, supported=False, uma=False, hybrid=False.");
         }
     }
 
@@ -611,37 +899,11 @@ internal sealed class OmenPerformanceController : IDisposable
         if (systemDesignDataInfo.ReadSucceeded && systemDesignDataInfo.SupportsGraphicsSwitching)
         {
             _graphicsModeSwitchSupported = true;
-            _graphicsSupportsHybrid = true;
-            _graphicsSupportsUma = true;
+            _graphicsSupportsHybrid = systemDesignDataInfo.HasHybridSlot;
+            _graphicsSupportsUma = systemDesignDataInfo.HasIntegratedSlot;
             _graphicsNeedsReboot = true;
-            _helperGraphicsSupportAvailable = false;
-            _helperGraphicsSupportedModes = -1;
-            _helperGraphicsSupportsHybrid = false;
-            _helperGraphicsSupportsUma = false;
             return;
         }
-
-        if (TryReadHelperGraphicsSupport(out int supportedModes, out bool supportsHybrid, out bool supportsUma))
-        {
-            _helperGraphicsSupportAvailable = true;
-            _helperGraphicsSupportedModes = supportedModes;
-            _helperGraphicsSupportsHybrid = supportsHybrid;
-            _helperGraphicsSupportsUma = supportsUma;
-
-            bool helperSupportsGraphicsSwitching = supportedModes > 0 || supportsHybrid || supportsUma;
-            _graphicsModeSwitchSupported = helperSupportsGraphicsSwitching;
-            _graphicsSupportsHybrid = helperSupportsGraphicsSwitching;
-            _graphicsSupportsUma = helperSupportsGraphicsSwitching;
-            _graphicsNeedsReboot = true;
-
-            Log("Graphics support BIOS probe was ambiguous; using HP helper fallback for button gating (SupportedModes=" + supportedModes + ", SupportedUMAmode=" + supportsUma + ").");
-            return;
-        }
-
-        _helperGraphicsSupportAvailable = false;
-        _helperGraphicsSupportedModes = -1;
-        _helperGraphicsSupportsHybrid = false;
-        _helperGraphicsSupportsUma = false;
         _graphicsModeSwitchSupported = false;
         _graphicsSupportsHybrid = false;
         _graphicsSupportsUma = false;
@@ -650,120 +912,10 @@ internal sealed class OmenPerformanceController : IDisposable
 
     private void RefreshGraphicsSupportFromFallback()
     {
-        if (TryReadHelperGraphicsSupport(out int supportedModes, out bool supportsHybrid, out bool supportsUma))
-        {
-            _helperGraphicsSupportAvailable = true;
-            _helperGraphicsSupportedModes = supportedModes;
-            _helperGraphicsSupportsHybrid = supportsHybrid;
-            _helperGraphicsSupportsUma = supportsUma;
-
-            bool helperSupportsGraphicsSwitching = supportedModes > 0 || supportsHybrid || supportsUma;
-            _graphicsModeSwitchSupported = helperSupportsGraphicsSwitching;
-            _graphicsSupportsHybrid = helperSupportsGraphicsSwitching;
-            _graphicsSupportsUma = helperSupportsGraphicsSwitching;
-            _graphicsNeedsReboot = true;
-            return;
-        }
-
         _graphicsModeSwitchSupported = false;
         _graphicsSupportsHybrid = false;
         _graphicsSupportsUma = false;
         _graphicsNeedsReboot = false;
-    }
-
-    private bool TryReadHelperGraphicsSupport(out int supportedModes, out bool supportsHybrid, out bool supportsUma)
-    {
-        supportedModes = -1;
-        supportsHybrid = false;
-        supportsUma = false;
-
-        try
-        {
-            Assembly assembly = TryLoadHpAssembly("HP.Omen.Core.Model.Device.dll");
-            Type helperType = assembly?.GetType("HP.Omen.Core.Model.Device.Models.GraphicsSwitcherHelper");
-            if (helperType == null)
-            {
-                return false;
-            }
-
-            supportedModes = GetStaticValue<int>(helperType, "SupportedModes", -1);
-            supportsHybrid = (supportedModes & 0x02) != 0;
-            supportsUma = GetStaticValue<bool>(helperType, "SupportedUMAmode", false);
-            return supportedModes >= 0;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static Assembly TryLoadHpAssembly(string fileName)
-    {
-        try
-        {
-            string simpleName = Path.GetFileNameWithoutExtension(fileName);
-            return Assembly.Load(simpleName);
-        }
-        catch
-        {
-        }
-
-        string[] searchRoots =
-        {
-            @"C:\Program Files\HP\SystemOptimizer",
-            @"C:\Program Files\HP\Overlay",
-            @"C:\Program Files\WindowsApps"
-        };
-
-        foreach (string root in searchRoots)
-        {
-            if (!Directory.Exists(root))
-            {
-                continue;
-            }
-
-            try
-            {
-                string path = Directory.EnumerateFiles(root, fileName, SearchOption.AllDirectories).FirstOrDefault();
-                if (!string.IsNullOrEmpty(path))
-                {
-                    return Assembly.LoadFrom(path);
-                }
-            }
-            catch
-            {
-            }
-        }
-
-        return null;
-    }
-
-    private static T GetStaticValue<T>(Type type, string propertyName, T fallback)
-    {
-        try
-        {
-            PropertyInfo property = type?.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static);
-            if (property == null)
-            {
-                return fallback;
-            }
-
-            object value = property.GetValue(null, null);
-            if (value is T typedValue)
-            {
-                return typedValue;
-            }
-
-            if (value != null)
-            {
-                return (T)Convert.ChangeType(value, typeof(T));
-            }
-        }
-        catch
-        {
-        }
-
-        return fallback;
     }
 
     private bool IsGraphicsModeSupported(GraphicsSwitcherMode mode)
@@ -783,6 +935,67 @@ internal sealed class OmenPerformanceController : IDisposable
     {
         string formatted = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + message;
         LogMessage?.Invoke(this, formatted);
+    }
+
+    private static string ComputeSha256Hex(byte[] data)
+    {
+        if (data == null || data.Length == 0)
+        {
+            return "<empty>";
+        }
+
+        using (SHA256 sha256 = SHA256.Create())
+        {
+            byte[] hash = sha256.ComputeHash(data);
+            return BitConverter.ToString(hash).Replace("-", string.Empty);
+        }
+    }
+
+    private static string FormatBytePreview(byte[] data, int take)
+    {
+        if (data == null || data.Length == 0)
+        {
+            return "<empty>";
+        }
+
+        int count = Math.Min(take, data.Length);
+        string prefix = BitConverter.ToString(data, 0, count);
+        return data.Length <= count ? prefix : prefix + "...(len=" + data.Length + ")";
+    }
+
+    private static string DescribePerformanceStatusBlobSensors(byte[] blob)
+    {
+        if (blob == null || blob.Length == 0)
+        {
+            return "<empty>";
+        }
+
+        byte sensor0 = blob.Length > 0 ? blob[0] : (byte)0;
+        byte sensor1 = blob.Length > 1 ? blob[1] : (byte)0;
+        byte sensor2 = blob.Length > 2 ? blob[2] : (byte)0;
+
+        return "S0=" + sensor0 + " (0x" + sensor0.ToString("X2") + ")"
+            + ", S1=" + sensor1 + " (0x" + sensor1.ToString("X2") + ")"
+            + ", S2=" + sensor2 + " (0x" + sensor2.ToString("X2") + ")";
+    }
+
+    private static int? CountDifferentBytes(byte[] left, byte[] right)
+    {
+        if (left == null || right == null || left.Length != right.Length)
+        {
+            return null;
+        }
+
+        int diff = 0;
+        for (int i = 0; i < left.Length; i++)
+        {
+            if (left[i] != right[i])
+            {
+                diff++;
+            }
+        }
+
+        return diff;
     }
 
     private void TrackEvent(string channel, string detail)

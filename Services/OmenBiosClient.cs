@@ -1,5 +1,6 @@
 using System;
 using System.Management;
+using System.Threading;
 using System.Threading.Tasks;
 using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
 using OmenHelper.Models;
@@ -147,6 +148,11 @@ internal sealed class OmenBiosClient : IDisposable
         });
     }
 
+    public Task<BiosWmiResult> SetPerformanceStatusBlobAsync(byte[] blob)
+    {
+        return Task.Run(() => Execute(131080, 46, NormalizeBlob(blob), 4));
+    }
+
     public Task<GraphicsSwitcherMode> GetGraphicsModeAsync()
     {
         return Task.Run(() =>
@@ -170,12 +176,27 @@ internal sealed class OmenBiosClient : IDisposable
         });
     }
 
+    public Task<BiosWmiResult> GetPerformanceStatusBlobAsync()
+    {
+        return Task.Run(() => Execute(131080, 45, new byte[4], 128));
+    }
+
     public Task<byte[]> GetSystemDesignDataAsync()
     {
         return Task.Run(() =>
         {
-            BiosWmiResult result = Execute(131080, 40, null, 128);
-            return result.ExecuteResult ? result.ReturnData : Array.Empty<byte>();
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                BiosWmiResult result = Execute(131080, 40, null, 128);
+                if (result.ExecuteResult && result.ReturnCode == 0)
+                {
+                    return result.ReturnData;
+                }
+
+                Thread.Sleep(100);
+            }
+
+            return Array.Empty<byte>();
         });
     }
 
@@ -183,14 +204,19 @@ internal sealed class OmenBiosClient : IDisposable
     {
         return Task.Run(() =>
         {
-            BiosWmiResult result = Execute(131080, 40, null, 128);
-            if (!result.ExecuteResult || result.ReturnData.Length < 9)
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                return SystemDesignDataInfo.Empty;
+                BiosWmiResult result = Execute(131080, 40, null, 128);
+                if (result.ExecuteResult && result.ReturnCode == 0 && result.ReturnData.Length >= 9)
+                {
+                    byte rawGpuModeSwitch = result.ReturnData[7];
+                    return SystemDesignDataInfo.FromRaw(rawGpuModeSwitch, true);
+                }
+
+                Thread.Sleep(100);
             }
 
-            byte rawGpuModeSwitch = result.ReturnData[7];
-            return SystemDesignDataInfo.FromRaw(rawGpuModeSwitch, true);
+            return SystemDesignDataInfo.Empty;
         });
     }
 
@@ -279,6 +305,18 @@ internal sealed class OmenBiosClient : IDisposable
         }
 
         Array.Copy(source, result, Math.Min(source.Length, result.Length));
+        return result;
+    }
+
+    private static byte[] NormalizeBlob(byte[] blob)
+    {
+        byte[] result = new byte[128];
+        if (blob == null || blob.Length == 0)
+        {
+            return result;
+        }
+
+        Array.Copy(blob, result, Math.Min(blob.Length, result.Length));
         return result;
     }
 

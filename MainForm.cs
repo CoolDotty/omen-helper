@@ -84,9 +84,9 @@ internal sealed class MainForm : Form
             WrapContents = true
         };
 
-        AddModeButton(modePanel, PerformanceMode.Default, "Default");
-        AddModeButton(modePanel, PerformanceMode.Performance, "Performance");
         AddModeButton(modePanel, PerformanceMode.Eco, "Eco");
+        AddModeButton(modePanel, PerformanceMode.Default, "Balanced");
+        AddModeButton(modePanel, PerformanceMode.Performance, "Performance");
         AddModeButton(modePanel, PerformanceMode.Extreme, "Unleashed");
 
         modeGroup.Controls.Add(modePanel);
@@ -253,18 +253,18 @@ internal sealed class MainForm : Form
         };
 
         _graphicsModeNoteLabel.AutoSize = true;
-        _graphicsModeNoteLabel.Text = "Loading supported graphics modes...";
+        _graphicsModeNoteLabel.Text = "Changing graphics mode requires a reboot.";
 
         _umaButton = new Button
         {
-            Text = "UMA",
+            Text = "Set UMA",
             AutoSize = true
         };
         _umaButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.UMAMode, "UMA");
 
         _hybridButton = new Button
         {
-            Text = "Hybrid",
+            Text = "Set Hybrid",
             AutoSize = true
         };
         _hybridButton.Click += async (_, __) => await ApplyGraphicsModeAsync(GraphicsSwitcherMode.Hybrid, "Hybrid");
@@ -313,7 +313,8 @@ internal sealed class MainForm : Form
         _statusLabel.Text =
             "Initialized: " + state.Initialized +
             " | Available: " + state.Available +
-            " | Mode: " + state.CurrentMode +
+            " | Mode: " + FormatDisplayedPerformanceMode(state) +
+            " | Fan Min: " + state.CurrentFanMinimumRpm + " RPM" +
             " | Graphics: " + FormatGraphicsMode(state.CurrentGraphicsMode) +
             " | Thermal: " + state.CurrentThermalMode +
             " | Support: " + string.Join(", ", state.SupportModes ?? Array.Empty<string>());
@@ -323,7 +324,8 @@ internal sealed class MainForm : Form
             pair.Value.BackColor = Color.Gainsboro;
         }
 
-        if (Enum.TryParse(state.CurrentMode, out PerformanceMode selectedMode) && _modeButtons.TryGetValue(selectedMode, out Button activeButton))
+        bool biosStateReady = state.Initialized && state.Available && (state.CurrentModeKnown || state.CurrentModeIsInferred);
+        if (biosStateReady && TryParseDisplayedPerformanceMode(state.CurrentMode, out PerformanceMode selectedMode) && _modeButtons.TryGetValue(selectedMode, out Button activeButton))
         {
             activeButton.BackColor = Color.LightGreen;
         }
@@ -334,18 +336,19 @@ internal sealed class MainForm : Form
         }
 
         _graphicsLabel.Text = "Graphics: " + FormatGraphicsMode(state.CurrentGraphicsMode);
-        _umaButton.Visible = state.GraphicsModeSwitchSupported;
-        _hybridButton.Visible = state.GraphicsModeSwitchSupported;
         UpdateGraphicsButtonState(_umaButton, "UMA", state.GraphicsModeSwitchSupported, state.CurrentGraphicsMode, GraphicsSwitcherMode.UMAMode);
         UpdateGraphicsButtonState(_hybridButton, "Hybrid", state.GraphicsModeSwitchSupported, state.CurrentGraphicsMode, GraphicsSwitcherMode.Hybrid);
         if (!state.GraphicsModeSwitchSupported)
         {
-            _graphicsModeNoteLabel.Text = "Graphics switching not supported on this platform.";
+            _graphicsModeNoteLabel.Text =
+                "No BIOS-confirmed graphics switching support. BIOS bits: 0x" +
+                state.GraphicsModeSwitchBits.ToString("X2");
         }
         else
         {
             _graphicsModeNoteLabel.Text =
-                "Supported: " + string.Join(", ", BuildSupportedGraphicsModeList(state)) +
+                "BIOS-supported: " + string.Join(", ", BuildSupportedGraphicsModeList(state)) +
+                " | BIOS bits: 0x" + state.GraphicsModeSwitchBits.ToString("X2") +
                 " | Restart required: " + state.GraphicsNeedsReboot;
         }
     }
@@ -383,6 +386,35 @@ internal sealed class MainForm : Form
         }
 
         return currentGraphicsMode;
+    }
+
+    private static string FormatDisplayedPerformanceMode(PerformanceControlState state)
+    {
+        if (state.CurrentModeKnown || state.CurrentModeIsInferred)
+        {
+            return state.CurrentModeIsInferred && !state.CurrentModeKnown
+                ? state.CurrentMode + " (last requested)"
+                : state.CurrentMode;
+        }
+
+        return "Unknown (readback unavailable)";
+    }
+
+    private static bool TryParseDisplayedPerformanceMode(string currentMode, out PerformanceMode mode)
+    {
+        if (string.Equals(currentMode, "Balanced", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = PerformanceMode.Default;
+            return true;
+        }
+
+        if (string.Equals(currentMode, "Unleashed", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = PerformanceMode.Extreme;
+            return true;
+        }
+
+        return Enum.TryParse(currentMode, out mode);
     }
 
     private static void UpdateGraphicsButtonState(Button button, string title, bool supported, string currentGraphicsMode, GraphicsSwitcherMode representedMode)
@@ -428,7 +460,7 @@ internal sealed class MainForm : Form
 
         DialogResult restartResult = MessageBox.Show(
             this,
-            "The graphics mode change was requested. Restart now?",
+            "The BIOS accepted the graphics mode change. A reboot is required before it takes effect. Restart now?",
             "Graphics Mode",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Question);

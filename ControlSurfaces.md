@@ -19,53 +19,40 @@ This file tracks the app-visible controls that are still supported in the BIOS-o
 
 ## Control Surfaces
 
-### A) BIOS / WMI Commands
-These are the only control paths used by the app now.
-
-- **Performance modes**
-  - Set platform performance mode: `command=131080, commandType=26, input=[255,<modeByte>,0,0]`
-    - Observed mode bytes on this machine:
-      - Eco (256) -> `48`
-      - Default/Balanced (0) -> `48`
-      - Performance (1) -> `49`
-      - Unleashed (4) -> `4`
-  - Set GPU power behavior used by each mode:
-    - `command=131080, commandType=34, input=[tgpEnable, ppabEnable, dState, gps]`
-    - Observed per-mode payloads:
-      - Eco -> `0,0,1,87`
-      - Default -> `0,1,1,87`
-      - Performance -> `1,1,1,87`
-      - Unleashed -> `1,1,1,87`
-  - Set concurrent TDP/TPP:
-    - `command=131080, commandType=41, input=[255,255,255,45]`
-
-- **Graphics mode**
-  - Read: `command=1, commandType=82`
-  - Write: `command=2, commandType=82, input=[mode,0,0,0]`
-  - Enum mapping:
-    - `Hybrid=0`
-    - `Discrete=1`
-    - `Optimus=2`
-    - `UMAMode=3`
-  - On this machine, the earlier helper-flag interpretation that implied discrete support was wrong.
-  - Treat the confirmed user-facing graphics modes as `Hybrid` and `Integrated Graphics Only (UMA)`.
-  - Do not expose `Discrete` as a confirmed mode on this laptop unless a future BIOS readback proves it works.
-
-- **Max fan**
-  - Write: `command=131080, commandType=39, input=[mode]`
-  - Read: `command=131080, commandType=38`
-
-- **System design data / capability bits**
-  - Read: `command=131080, commandType=40`
-  - Cached at: `HKCU\\Software\\HP\\OMEN Ally\\Settings\\SystemDesignData`
-
-## Current App Surface
-
-- Performance modes: direct BIOS/WMI only, with safe readback where available.
-- Graphics mode: direct BIOS/WMI only.
-- Fan control: BIOS-backed max fan on/off only.
-- Telemetry: not backed by HP pipes in the app.
-
-## Historical Notes
-
-The HP background pipe paths that were reverse engineered during research are no longer part of the app surface. They remain documented elsewhere in the repo for reference, but the build does not use them.
+- Direct BIOS read getters from OmenMon:
+  - GetAnimTable
+  - GetBacklight
+  - GetColorTable
+  - GetAdapter
+  - GetBornDate
+  - GetKbdType
+  - GetSystem
+  - HasBacklight
+  - HasMemoryOverclock
+  - HasOverclock
+  - HasUndervoltBios
+  - GetGpuMode
+  - GetGpuPower
+  - GetFanCount
+  - GetFanType
+  - GetFanLevel
+  - GetFanTable
+  - GetMaxFan
+  - GetTemperature
+  - GetThrottling
+  - see /C:/Users/dot/Documents/omen-helper/OmenMon/Hardware/BiosCtl.cs and /C:/Users/dot/Documents/omen-helper/OmenMon/App/Cli/CliOp.cs
+- Convenience reads OmenMon derives from those getters:
+  - GetGpuCustomTgp
+  - GetGpuDState
+  - GetGpuPpab
+  - GetDefaultCpuPowerLimit4
+  - GetGpuModeSupport
+  - GetKbdBacklightSupport
+  - GetKbdColorSupport
+  - see /C:/Users/dot/Documents/omen-helper/OmenMon/Hardware/Settings.cs
+- WMI getters OmenMon also exposes, but they are not BIOS:
+  - GetManufacturer
+  - GetProduct
+  - GetSerial
+  - GetVersion
+  - see /C:/Users/dot/Documents/omen-helper/OmenMon/Hardware/Settings.cs
