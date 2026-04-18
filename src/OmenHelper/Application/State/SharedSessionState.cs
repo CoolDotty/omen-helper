@@ -67,10 +67,10 @@ internal sealed class SharedSessionState
     public Queue<string> RecentEvents { get; set; } = new Queue<string>();
     public object DiagnosticsSync { get; } = new object();
 
-    public event EventHandler<PerformanceControlState>? StateChanged;
-    public event EventHandler<string>? LogMessage;
+    public event EventHandler<PerformanceControlState> StateChanged;
+    public event EventHandler<string> LogMessage;
 
-    public void RaiseStateChanged(PerformanceControlState? state = null)
+    public void RaiseStateChanged(PerformanceControlState state = null)
     {
         StateChanged?.Invoke(this, state ?? BuildPerformanceControlState());
     }
