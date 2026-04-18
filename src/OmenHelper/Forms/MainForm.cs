@@ -26,6 +26,7 @@ internal sealed class MainForm : Form
     private readonly Dictionary<PerformanceMode, Button> _modeButtons = new Dictionary<PerformanceMode, Button>();
     private Button _umaButton;
     private Button _hybridButton;
+    private FanCurvePanel _fanCurvePanel;
     private DiagnosticsForm _diagnosticsForm;
     private readonly Timer _powerModeTimer = new Timer();
     private readonly Timer _fanTempTimer = new Timer();
@@ -36,8 +37,8 @@ internal sealed class MainForm : Form
     {
         Text = "OMEN Helper BIOS Control";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(900, 620);
-        Size = new Size(980, 680);
+        MinimumSize = new Size(1040, 760);
+        Size = new Size(1180, 860);
 
         InitializeUi();
 
@@ -65,15 +66,7 @@ internal sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        Label header = new Label
-        {
-            AutoSize = true,
-            Text = "BIOS-only OMEN control",
-            Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold, GraphicsUnit.Point),
-            Margin = new Padding(0, 0, 0, 10)
-        };
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
         _statusLabel.AutoSize = true;
         _statusLabel.Text = "Initializing firmware state.";
@@ -117,16 +110,30 @@ internal sealed class MainForm : Form
         controlsRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         controlsRow.Controls.Add(BuildThermalGroup(), 0, 0);
-        controlsRow.Controls.Add(BuildActionsGroup(), 1, 0);
+        controlsRow.Controls.Add(BuildDiagnosticsGroup(), 1, 0);
         controlsRow.Controls.Add(BuildGraphicsGroup(), 0, 1);
         controlsRow.Controls.Add(BuildPowerModeGroup(), 1, 1);
 
-        root.Controls.Add(header, 0, 0);
-        root.Controls.Add(_statusLabel, 0, 1);
-        root.Controls.Add(_graphicsLabel, 0, 2);
-        root.Controls.Add(modeGroup, 0, 3);
-        root.Controls.Add(controlsRow, 0, 4);
-        root.Controls.Add(BuildFanTempGroup(), 0, 5);
+        _fanCurvePanel = new FanCurvePanel(_controller)
+        {
+            Dock = DockStyle.Fill
+        };
+
+        GroupBox fanCurveGroup = new GroupBox
+        {
+            Text = "Fan Curve Manager",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12),
+            Margin = new Padding(0, 0, 0, 12)
+        };
+        fanCurveGroup.Controls.Add(_fanCurvePanel);
+
+        root.Controls.Add(_statusLabel, 0, 0);
+        root.Controls.Add(_graphicsLabel, 0, 1);
+        root.Controls.Add(modeGroup, 0, 2);
+        root.Controls.Add(controlsRow, 0, 3);
+        root.Controls.Add(BuildFanTempGroup(), 0, 4);
+        root.Controls.Add(fanCurveGroup, 0, 5);
 
         GroupBox logGroup = new GroupBox
         {
@@ -187,11 +194,11 @@ internal sealed class MainForm : Form
         return thermalGroup;
     }
 
-    private GroupBox BuildActionsGroup()
+    private GroupBox BuildDiagnosticsGroup()
     {
         GroupBox actionGroup = new GroupBox
         {
-            Text = "Actions",
+            Text = "Diagnostics",
             Dock = DockStyle.Fill,
             AutoSize = true,
             Padding = new Padding(12),
@@ -204,27 +211,6 @@ internal sealed class MainForm : Form
             AutoSize = true
         };
 
-        Button refreshButton = new Button
-        {
-            Text = "Refresh State",
-            AutoSize = true
-        };
-        refreshButton.Click += async (_, __) => await _controller.RequestInitializationAsync();
-
-        Button notesButton = new Button
-        {
-            Text = "Open Notes",
-            AutoSize = true
-        };
-        notesButton.Click += (_, __) =>
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RESEARCH_NOTES.md"),
-                UseShellExecute = true
-            });
-        };
-
         Button diagnosticsButton = new Button
         {
             Text = "Open Diagnostics",
@@ -232,17 +218,7 @@ internal sealed class MainForm : Form
         };
         diagnosticsButton.Click += (_, __) => ShowDiagnosticsWindow();
 
-        Button fanCurveButton = new Button
-        {
-            Text = "Fan Curve Manager",
-            AutoSize = true
-        };
-        fanCurveButton.Click += (_, __) => ShowFanCurveManager();
-
-        actionPanel.Controls.Add(refreshButton);
-        actionPanel.Controls.Add(notesButton);
         actionPanel.Controls.Add(diagnosticsButton);
-        actionPanel.Controls.Add(fanCurveButton);
         actionGroup.Controls.Add(actionPanel);
         return actionGroup;
     }
@@ -404,6 +380,7 @@ internal sealed class MainForm : Form
     {
         _powerModeTimer.Stop();
         _fanTempTimer.Stop();
+        _fanCurvePanel?.StopTelemetry();
         _diagnosticsForm?.Close();
         _controller.Dispose();
     }
@@ -679,19 +656,6 @@ internal sealed class MainForm : Form
 
         _diagnosticsForm = new DiagnosticsForm(() => _controller.BuildDiagnosticsReportAsync());
         _diagnosticsForm.Show(this);
-    }
-
-    private void ShowFanCurveManager()
-    {
-        try
-        {
-            var form = new FanCurveForm(_controller);
-            form.ShowDialog(this);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, "Failed to open Fan Curve Manager: " + ex.Message, "Fan Curve", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
     }
 
     private async Task ApplyGraphicsModeAsync(GraphicsSwitcherMode mode, string label)

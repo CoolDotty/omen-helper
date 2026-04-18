@@ -17,6 +17,9 @@ x86/
 artifacts/
 TestResults/
 
+# MSBuild scratch output from local repair/build steps
+src/OmenHelper/UsersdotDocumentsomen-helpertmp_build/
+
 # Visual Studio / Rider
 .vs/
 *.suo
