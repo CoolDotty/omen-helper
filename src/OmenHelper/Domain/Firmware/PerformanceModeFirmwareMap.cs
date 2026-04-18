@@ -1,7 +1,7 @@
 using System;
 using Hp.Bridge.Client.SDKs.PerformanceControl.Enums;
 
-namespace OmenHelper.Services;
+namespace OmenHelper.Domain.Firmware;
 
 internal static class PerformanceModeFirmwareMap
 {

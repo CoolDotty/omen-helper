@@ -48,8 +48,8 @@ src\OmenHelper\bin\Debug\net48\OmenHelper.exe
 ## Development Notes
 
 - The source tree lives under `src/OmenHelper/`.
-- `MainForm` is the app shell, while the firmware and telemetry logic is in `src/OmenHelper/Services/`.
-- `BiosCommandCatalog`, `PerformanceModeFirmwareMap`, and `GraphicsSupportHelper` hold the shared command and display mappings.
+- `MainForm` is the app shell, while orchestration lives under `src/OmenHelper/Application/` and low-level firmware access lives under `src/OmenHelper/Infrastructure/`.
+- `BiosCommandCatalog`, `PerformanceModeFirmwareMap`, and `GraphicsSupportPolicy` hold the shared command and display mappings.
 - LibreHardwareMonitor is currently referenced from the local `bin_temp5` cache in this workspace. If you are bringing up the repo on another machine, you may need to restore those binaries or convert the project back to NuGet package references.
 
 ## Repository Layout
@@ -58,10 +58,10 @@ src\OmenHelper\bin\Debug\net48\OmenHelper.exe
 src/
   OmenHelper/
     App/
-    Forms/
+    Application/
+    Domain/
     Infrastructure/
-    Models/
-    Services/
+    Presentation/
 README.md
 OmenHelper.sln
 Directory.Build.props

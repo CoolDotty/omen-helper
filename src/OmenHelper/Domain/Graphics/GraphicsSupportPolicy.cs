@@ -1,20 +1,8 @@
-using System.Collections.Generic;
-using OmenHelper.Models;
+namespace OmenHelper.Domain.Graphics;
 
-namespace OmenHelper.Services;
-
-internal static class GraphicsSupportHelper
+internal static class GraphicsSupportPolicy
 {
-    internal static IEnumerable<string> BuildSupportedGraphicsModeList(PerformanceControlState state)
-    {
-        if (state != null && state.GraphicsModeSwitchSupported)
-        {
-            yield return "Hybrid";
-            yield return "UMA";
-        }
-    }
-
-    internal static string FormatDisplayName(string currentGraphicsMode)
+    public static string FormatDisplayName(string currentGraphicsMode)
     {
         if (string.IsNullOrWhiteSpace(currentGraphicsMode))
         {
@@ -23,7 +11,7 @@ internal static class GraphicsSupportHelper
 
         if (string.Equals(currentGraphicsMode, HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums.GraphicsSwitcherMode.UMAMode.ToString(), System.StringComparison.OrdinalIgnoreCase))
         {
-            return "Integrated Only";
+            return "Integrated";
         }
 
         if (string.Equals(currentGraphicsMode, HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums.GraphicsSwitcherMode.Hybrid.ToString(), System.StringComparison.OrdinalIgnoreCase))

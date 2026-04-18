@@ -3,9 +3,10 @@ using System.Management;
 using System.Threading;
 using System.Threading.Tasks;
 using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
-using OmenHelper.Models;
+using OmenHelper.Domain.Firmware;
+using OmenHelper.Domain.Graphics;
 
-namespace OmenHelper.Services;
+namespace OmenHelper.Infrastructure.Bios;
 
 internal sealed class OmenBiosClient : IDisposable
 {

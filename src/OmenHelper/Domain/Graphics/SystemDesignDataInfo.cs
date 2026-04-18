@@ -1,6 +1,6 @@
 using System;
 
-namespace OmenHelper.Models;
+namespace OmenHelper.Domain.Graphics;
 
 [Flags]
 internal enum GraphicsModeSupportSlot : byte

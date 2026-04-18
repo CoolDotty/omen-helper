@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace OmenHelper.Models;
+namespace OmenHelper.Application.State;
 
 internal sealed class PerformanceControlState
 {

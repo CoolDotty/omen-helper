@@ -2,7 +2,7 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace OmenHelper;
+namespace OmenHelper.Presentation.Forms;
 
 internal sealed class DiagnosticsForm : Form
 {

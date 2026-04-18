@@ -1,6 +1,6 @@
 using System;
 
-namespace OmenHelper.Services;
+namespace OmenHelper.Domain.Firmware;
 
 internal static class BiosCommandCatalog
 {

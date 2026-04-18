@@ -1,5 +1,6 @@
 using System;
-using System.Windows.Forms;
+using WinFormsApplication = System.Windows.Forms.Application;
+using OmenHelper.Presentation.Forms;
 
 namespace OmenHelper;
 
@@ -10,8 +11,8 @@ internal static class Program
     {
         HpAssemblyResolver.Register();
 
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new MainForm());
+        WinFormsApplication.EnableVisualStyles();
+        WinFormsApplication.SetCompatibleTextRenderingDefault(false);
+        WinFormsApplication.Run(new MainForm());
     }
 }
