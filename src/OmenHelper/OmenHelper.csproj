@@ -80,10 +80,4 @@
     <None Remove="OmenMon\**\*" />
     <Content Remove="OmenMon\**\*" />
   </ItemGroup>
-
-  <ItemGroup>
-    <None Include="..\..\RESEARCH_NOTES.md">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
 </Project>

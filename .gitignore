@@ -34,3 +34,5 @@ packages/
 *.log
 *.tmp
 *.cache
+
+# Let people config themselves. Keep skills in project root.
