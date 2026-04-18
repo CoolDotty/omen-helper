@@ -25,6 +25,7 @@ internal sealed class OmenPerformanceController : IDisposable
     private readonly object _diagnosticsSync = new object();
     private readonly string _performanceModeStatePath;
     private readonly string _powerModePreferencePath;
+    private readonly string _fanMinimumPreferencePath;
 
     private bool _started;
     private bool _disposed;
@@ -35,7 +36,9 @@ internal sealed class OmenPerformanceController : IDisposable
     private bool _currentModeIsInferred;
     private ThermalControl _currentThermalMode = ThermalControl.Auto;
     private FanMode _currentLegacyFanMode = FanMode.Normal;
+    private bool _maxFanEnabled;
     private GraphicsSwitcherMode _currentGraphicsMode = GraphicsSwitcherMode.Unknown;
+    private int? _fanMinimumOverrideRpm;
     private bool _extremeUnlocked = true;
     private bool _unleashVisible = true;
     private ThermalModeOnUI _thermalModeUiType = (ThermalModeOnUI)0;
@@ -94,6 +97,10 @@ internal sealed class OmenPerformanceController : IDisposable
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "OmenHelper",
             "power-mode-preferences.txt");
+        _fanMinimumPreferencePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "OmenHelper",
+            "fan-minimum-preference.txt");
     }
 
     public void Start()
@@ -124,6 +131,7 @@ internal sealed class OmenPerformanceController : IDisposable
         _currentModeKnown = false;
         LoadRememberedPerformanceMode();
         LoadPowerModePreferences();
+        LoadFanMinimumPreference();
 
         _started = true;
 
@@ -163,12 +171,15 @@ internal sealed class OmenPerformanceController : IDisposable
     {
         try
         {
-            bool maxFanEnabled = await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false);
-            _currentLegacyFanMode = maxFanEnabled ? FanMode.Turbo : FanMode.Normal;
-            _currentThermalMode = maxFanEnabled ? ThermalControl.Max : ThermalControl.Auto;
+            bool maxFanEnabled = await GetMaxFanAsync().ConfigureAwait(false);
             RefreshGraphicsMode();
             RefreshGraphicsSupport();
             await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
+            if (_fanMinimumOverrideRpm.HasValue)
+            {
+                await ApplyFanMinimumBlobAsync("startup preference").ConfigureAwait(false);
+                await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
+            }
             _initialized = true;
             _available = true;
             TrackEvent("Firmware", "Read max fan=" + (maxFanEnabled ? "On" : "Off"));
@@ -198,7 +209,7 @@ internal sealed class OmenPerformanceController : IDisposable
         builder.AppendLine("  Mode Inferred: " + _currentModeIsInferred);
         builder.AppendLine("  Thermal: " + _currentThermalMode);
         builder.AppendLine("  Legacy Fan: " + _currentLegacyFanMode);
-        builder.AppendLine("  Fan Minimum RPM: " + GetFanMinimumRpmForMode(_currentMode));
+        builder.AppendLine("  Fan Minimum RPM: " + GetConfiguredFanMinimumRpm() + (_fanMinimumOverrideRpm.HasValue ? " (custom)" : " (mode default)"));
         builder.AppendLine("  Graphics: " + _currentGraphicsMode);
         if (!string.IsNullOrWhiteSpace(_lastPerformanceRequestMode))
         {
@@ -214,6 +225,8 @@ internal sealed class OmenPerformanceController : IDisposable
         builder.AppendLine("  Performance Status Blob sensors: " + DescribePerformanceStatusBlobSensors(_lastPerformanceStatusBlob));
         builder.AppendLine("  Performance Status Blob changed bytes: " + (_lastPerformanceStatusBlobChangedBytes.HasValue ? _lastPerformanceStatusBlobChangedBytes.Value.ToString() : "<n/a>"));
         builder.AppendLine("  Performance Status Blob previous hash: " + (string.IsNullOrWhiteSpace(_previousPerformanceStatusBlobHash) ? "<none>" : _previousPerformanceStatusBlobHash));
+        builder.AppendLine("  Fan Minimum Override RPM: " + (_fanMinimumOverrideRpm.HasValue ? _fanMinimumOverrideRpm.Value.ToString() : "<none>"));
+        builder.AppendLine("  Fan Minimum Effective RPM: " + GetConfiguredFanMinimumRpm());
         builder.AppendLine("  Fan Minimum Blob (BIOS 131080/46) exec: " + (_lastFanTargetBlobExecuteResult.HasValue ? _lastFanTargetBlobExecuteResult.Value.ToString() : "<none>") + " rc: " + (_lastFanTargetBlobReturnCode.HasValue ? _lastFanTargetBlobReturnCode.Value.ToString() : "<none>"));
         builder.AppendLine("  Fan Minimum Blob (BIOS 131080/46) hash: " + (string.IsNullOrWhiteSpace(_lastFanTargetBlobHash) ? "<none>" : _lastFanTargetBlobHash));
         builder.AppendLine("  Fan Minimum Blob (BIOS 131080/46) preview: " + (string.IsNullOrWhiteSpace(_lastFanTargetBlobPreview) ? "<none>" : _lastFanTargetBlobPreview));
@@ -261,7 +274,7 @@ internal sealed class OmenPerformanceController : IDisposable
             builder.AppendLine("  LastGraphicsRequestReturnCode: " + (_lastGraphicsRequestReturnCode.HasValue ? _lastGraphicsRequestReturnCode.Value.ToString() : "<none>"));
             try
             {
-                builder.AppendLine("  MaxFan(BIOS): " + ((await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false)) ? "On" : "Off"));
+                builder.AppendLine("  MaxFan(BIOS): " + ((await GetMaxFanAsync().ConfigureAwait(false)) ? "On" : "Off"));
             }
             catch (Exception ex)
             {
@@ -360,30 +373,72 @@ internal sealed class OmenPerformanceController : IDisposable
         RaiseStateChanged();
     }
 
-    public Task SetMaxFanThermalModeAsync(bool enabled)
+    public async Task<bool> GetMaxFanAsync()
     {
-        return SetThermalModeAsync(enabled ? ThermalControl.Max : ThermalControl.Auto);
+        bool maxFanEnabled = await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false);
+        _maxFanEnabled = maxFanEnabled;
+        _currentLegacyFanMode = maxFanEnabled ? FanMode.Turbo : FanMode.Normal;
+        _currentThermalMode = maxFanEnabled ? ThermalControl.Max : ThermalControl.Auto;
+        return maxFanEnabled;
+    }
+
+    public async Task SetMaxFanAsync(bool enabled)
+    {
+        bool success = await TrySetMaxFanAsync(enabled).ConfigureAwait(false);
+        if (!success)
+        {
+            Log("Max fan change failed (firmware only).");
+            return;
+        }
+
+        _maxFanEnabled = enabled;
+        _currentLegacyFanMode = enabled ? FanMode.Turbo : FanMode.Normal;
+        _currentThermalMode = enabled ? ThermalControl.Max : ThermalControl.Auto;
+
+        await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
+        RaiseStateChanged();
     }
 
     public async Task SetLegacyFanModeAsync(FanMode mode)
     {
-        bool enableMaxFan = mode == FanMode.Turbo;
-        bool success = await TrySetMaxFanAsync(enableMaxFan).ConfigureAwait(false);
-        if (!success)
+        await SetMaxFanAsync(mode == FanMode.Turbo).ConfigureAwait(false);
+    }
+
+    public int? GetFanMinimumOverrideRpm()
+    {
+        return _fanMinimumOverrideRpm;
+    }
+
+    public int GetEffectiveFanMinimumRpm()
+    {
+        return GetConfiguredFanMinimumRpm();
+    }
+
+    public IReadOnlyList<int> GetFanMinimumOptions()
+    {
+        return new[] { 0, 1500, 2500, 3500, 4500, 5500, 6500 };
+    }
+
+    public async Task SetFanMinimumOverrideRpmAsync(int? rpm)
+    {
+        if (rpm.HasValue && !IsAllowedFanMinimumRpm(rpm.Value))
         {
-            Log("Legacy fan mode change failed (firmware only).");
+            Log("Ignored unsupported fan minimum RPM: " + rpm.Value + ".");
             return;
         }
 
-        _currentLegacyFanMode = mode;
-        _currentThermalMode = enableMaxFan ? ThermalControl.Max : _currentThermalMode == ThermalControl.Max ? ThermalControl.Auto : _currentThermalMode;
+        int? previousOverride = _fanMinimumOverrideRpm;
+        _fanMinimumOverrideRpm = rpm;
 
-        bool fanTargetOk = await ApplyFanMinimumBlobAsync("legacy fan mode change").ConfigureAwait(false);
-        if (!fanTargetOk)
+        if (!await ApplyFanMinimumBlobAsync("fan minimum selection").ConfigureAwait(false))
         {
-            Log("Fan target blob restore after legacy fan mode change failed.");
+            _fanMinimumOverrideRpm = previousOverride;
+            Log("Fan minimum selection failed; reverted to previous value.");
+            RaiseStateChanged();
+            return;
         }
 
+        SaveFanMinimumPreference();
         await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
         RaiseStateChanged();
     }
@@ -478,9 +533,10 @@ internal sealed class OmenPerformanceController : IDisposable
             CurrentMode = DescribeCurrentMode(),
             CurrentModeIsInferred = _currentModeIsInferred,
             CurrentThermalMode = _currentThermalMode.ToString(),
-            MaxFanEnabled = _currentThermalMode == ThermalControl.Max,
+            MaxFanEnabled = _maxFanEnabled,
             CurrentLegacyFanMode = _currentLegacyFanMode.ToString(),
-            CurrentFanMinimumRpm = GetFanMinimumRpmForMode(_currentMode),
+            CurrentFanMinimumRpm = GetConfiguredFanMinimumRpm(),
+            FanMinimumOverrideRpm = _fanMinimumOverrideRpm,
             CurrentGraphicsMode = _currentGraphicsMode.ToString(),
             GraphicsModeSwitchSupported = _graphicsModeSwitchSupported,
             GraphicsSupportsUma = _graphicsSupportsUma,
@@ -632,6 +688,49 @@ internal sealed class OmenPerformanceController : IDisposable
         }
     }
 
+    private void LoadFanMinimumPreference()
+    {
+        try
+        {
+            if (!File.Exists(_fanMinimumPreferencePath))
+            {
+                return;
+            }
+
+            string persisted = File.ReadAllText(_fanMinimumPreferencePath).Trim();
+            if (!TryParseFanMinimumPreference(persisted, out int? rpm))
+            {
+                Log("Ignored persisted fan minimum value: " + persisted);
+                return;
+            }
+
+            _fanMinimumOverrideRpm = rpm;
+            Log("Loaded fan minimum preference: " + FormatFanMinimumPreference(_fanMinimumOverrideRpm));
+        }
+        catch (Exception ex)
+        {
+            Log("Fan minimum preference load failed: " + ex.Message);
+        }
+    }
+
+    private void SaveFanMinimumPreference()
+    {
+        try
+        {
+            string directory = Path.GetDirectoryName(_fanMinimumPreferencePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(_fanMinimumPreferencePath, FormatFanMinimumPreference(_fanMinimumOverrideRpm));
+        }
+        catch (Exception ex)
+        {
+            Log("Fan minimum preference save failed: " + ex.Message);
+        }
+    }
+
     private static bool TryParsePreferenceMode(string value, out PerformanceMode? mode)
     {
         return TryParseRememberedPerformanceMode(value, out mode);
@@ -674,6 +773,30 @@ internal sealed class OmenPerformanceController : IDisposable
     private static string FormatPowerModePreference(PerformanceMode? mode)
     {
         return mode.HasValue ? PerformanceModeFirmwareMap.FormatDisplayName(mode.Value) : "None";
+    }
+
+    private static bool TryParseFanMinimumPreference(string value, out int? rpm)
+    {
+        if (string.IsNullOrWhiteSpace(value) || string.Equals(value, "None", StringComparison.OrdinalIgnoreCase) || string.Equals(value, "Mode default", StringComparison.OrdinalIgnoreCase))
+        {
+            rpm = null;
+            return true;
+        }
+
+        int parsed;
+        if (int.TryParse(value, out parsed) && IsAllowedFanMinimumRpm(parsed))
+        {
+            rpm = parsed;
+            return true;
+        }
+
+        rpm = null;
+        return false;
+    }
+
+    private static string FormatFanMinimumPreference(int? rpm)
+    {
+        return rpm.HasValue ? rpm.Value.ToString() : "None";
     }
 
     private static byte MapPerformanceModeToType26Value(PerformanceMode mode)
@@ -840,9 +963,7 @@ internal sealed class OmenPerformanceController : IDisposable
     {
         try
         {
-            bool maxFanEnabled = await _omenBiosClient.GetMaxFanEnabledAsync().ConfigureAwait(false);
-            _currentLegacyFanMode = maxFanEnabled ? FanMode.Turbo : FanMode.Normal;
-            _currentThermalMode = maxFanEnabled ? ThermalControl.Max : ThermalControl.Auto;
+            bool maxFanEnabled = await GetMaxFanAsync().ConfigureAwait(false);
             TrackEvent("Firmware", "Refresh max fan=" + (maxFanEnabled ? "On" : "Off"));
         }
         catch (Exception ex)
@@ -856,7 +977,7 @@ internal sealed class OmenPerformanceController : IDisposable
         try
         {
             byte[] payload = BuildFanMinimumBlobForCurrentMode();
-            Log("Fan minimum blob write request (source=" + source + ", mode=" + FormatPerformanceMode(_currentMode) + ", minRpm=" + GetFanMinimumRpmForMode(_currentMode) + ", payload=" + FormatInputData(payload) + ")");
+            Log("Fan minimum blob write request (source=" + source + ", mode=" + FormatPerformanceMode(_currentMode) + ", minRpm=" + GetConfiguredFanMinimumRpm() + ", payload=" + FormatInputData(payload) + ")");
             OmenBiosClient.BiosWmiResult result = await _omenBiosClient.SetPerformanceStatusBlobAsync(payload).ConfigureAwait(false);
 
             byte[] previousBlob;
@@ -879,7 +1000,7 @@ internal sealed class OmenPerformanceController : IDisposable
                 "Firmware",
                 "Write fan minimum blob source=" + source +
                 ", mode=" + FormatPerformanceMode(_currentMode) +
-                ", minRpm=" + GetFanMinimumRpmForMode(_currentMode) +
+                ", minRpm=" + GetConfiguredFanMinimumRpm() +
                 ", rc=" + result.ReturnCode);
             Log("Fan minimum blob write result (source=" + source + ", exec=" + result.ExecuteResult + ", rc=" + result.ReturnCode + ", out=" + FormatReturnData(result.ReturnData) + ")");
 
@@ -914,12 +1035,34 @@ internal sealed class OmenPerformanceController : IDisposable
 
     private byte[] BuildFanMinimumBlobForCurrentMode()
     {
-        int minimumRpm = RoundToStep100(GetFanMinimumRpmForMode(_currentMode));
+        int minimumRpm = RoundToStep100(GetConfiguredFanMinimumRpm());
         byte minimumValue = (byte)Math.Max(0, Math.Min(255, minimumRpm / 100));
         byte[] payload = new byte[128];
         payload[0] = minimumValue;
         payload[1] = minimumValue;
         return payload;
+    }
+
+    private int GetConfiguredFanMinimumRpm()
+    {
+        return _fanMinimumOverrideRpm.HasValue ? _fanMinimumOverrideRpm.Value : GetFanMinimumRpmForMode(_currentMode);
+    }
+
+    private static bool IsAllowedFanMinimumRpm(int rpm)
+    {
+        switch (rpm)
+        {
+            case 0:
+            case 1500:
+            case 2500:
+            case 3500:
+            case 4500:
+            case 5500:
+            case 6500:
+                return true;
+            default:
+                return false;
+        }
     }
 
     private static int RoundToStep100(int value)

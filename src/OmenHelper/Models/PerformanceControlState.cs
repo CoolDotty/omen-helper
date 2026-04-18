@@ -22,6 +22,8 @@ internal sealed class PerformanceControlState
 
     public int CurrentFanMinimumRpm { get; set; }
 
+    public int? FanMinimumOverrideRpm { get; set; }
+
     public string CurrentGraphicsMode { get; set; }
 
     public bool GraphicsModeSwitchSupported { get; set; }

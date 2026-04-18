@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Hp.Bridge.Client.SDKs.PerformanceControl.Enums;
@@ -23,6 +24,7 @@ internal sealed class MainForm : Form
     private readonly ComboBox _pluggedModeCombo = new ComboBox();
     private readonly Label _powerSourceLabel = new Label();
     private readonly CheckBox _maxFanCheckBox = new CheckBox();
+    private readonly ComboBox _fanSpeedCombo = new ComboBox();
     private readonly TextBox _logTextBox = new TextBox();
     private readonly Dictionary<PerformanceMode, Button> _modeButtons = new Dictionary<PerformanceMode, Button>();
     private readonly Dictionary<GraphicsSwitcherMode, Button> _graphicsButtons = new Dictionary<GraphicsSwitcherMode, Button>();
@@ -32,6 +34,7 @@ internal sealed class MainForm : Form
     private readonly Timer _powerModeTimer = new Timer();
     private bool _suppressPowerModeUiUpdates;
     private bool _suppressMaxFanUiUpdates;
+    private bool _suppressFanMinimumUiUpdates;
     private PerformanceControlState _latestState = new PerformanceControlState();
 
     public MainForm()
@@ -89,8 +92,9 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Top,
             AutoSize = true,
             ColumnCount = 1,
-            RowCount = 4
+            RowCount = 5
         };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -139,6 +143,44 @@ internal sealed class MainForm : Form
         _maxFanCheckBox.CheckedChanged += async (_, __) => await OnMaxFanCheckedChangedAsync();
         thermalPanel.Controls.Add(_maxFanCheckBox);
 
+        TableLayoutPanel fanRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0, 0, 0, 8)
+        };
+        fanRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        fanRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+
+        Label fanLabel = new Label
+        {
+            Text = "Fan speed:",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 6, 8, 6)
+        };
+
+        _fanSpeedCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _fanSpeedCombo.Width = 180;
+        _fanSpeedCombo.Items.Clear();
+        _fanSpeedCombo.Items.AddRange(new object[]
+        {
+            FormatFanSpeedChoice(null),
+            FormatFanSpeedChoice(0),
+            FormatFanSpeedChoice(1500),
+            FormatFanSpeedChoice(2500),
+            FormatFanSpeedChoice(3500),
+            FormatFanSpeedChoice(4500),
+            FormatFanSpeedChoice(5500),
+            FormatFanSpeedChoice(6500)
+        });
+        _fanSpeedCombo.SelectedIndexChanged += async (_, __) => await OnFanSpeedSelectionChangedAsync();
+
+        fanRow.Controls.Add(fanLabel, 0, 0);
+        fanRow.Controls.Add(_fanSpeedCombo, 1, 0);
+
         TableLayoutPanel powerRow = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -186,7 +228,8 @@ internal sealed class MainForm : Form
         layout.Controls.Add(summaryRow, 0, 0);
         layout.Controls.Add(modePanel, 0, 1);
         layout.Controls.Add(thermalPanel, 0, 2);
-        layout.Controls.Add(powerRow, 0, 3);
+        layout.Controls.Add(fanRow, 0, 3);
+        layout.Controls.Add(powerRow, 0, 4);
         performanceGroup.Controls.Add(layout);
         return performanceGroup;
     }
@@ -301,10 +344,11 @@ internal sealed class MainForm : Form
         PerformanceControlState state = _latestState ?? new PerformanceControlState();
         string modeText = FormatDisplayedPerformanceMode(state);
         string graphicsText = FormatGraphicsMode(state.CurrentGraphicsMode);
-        string fanMinimumText = state.CurrentFanMinimumRpm > 0 ? state.CurrentFanMinimumRpm.ToString("N0") + "RPM" : "<unavailable>";
+        string fanMinimumText = state.Initialized && state.Available ? state.CurrentFanMinimumRpm.ToString("N0") + "RPM" : "<unavailable>";
+        string fanMinimumSuffix = state.FanMinimumOverrideRpm.HasValue ? " (custom)" : " (mode default)";
 
         _performanceSummaryLabel.Text = "Mode: " + modeText;
-        _performanceMetricsLabel.Text = "Thermal: " + state.CurrentThermalMode + " | Legacy fan: " + state.CurrentLegacyFanMode + " | Fan minimum: " + fanMinimumText;
+        _performanceMetricsLabel.Text = "Thermal: " + state.CurrentThermalMode + " | Legacy fan: " + state.CurrentLegacyFanMode + " | Fan minimum: " + fanMinimumText + fanMinimumSuffix;
         _graphicsSummaryLabel.Text = "Graphics Mode: " + graphicsText;
         _graphicsMetricsLabel.Text = "Support: UMA=" + state.GraphicsSupportsUma + " Hybrid=" + state.GraphicsSupportsHybrid + " | Reboot=" + state.GraphicsNeedsReboot;
     }
@@ -352,6 +396,7 @@ internal sealed class MainForm : Form
         UpdateGraphicsButtonState(_umaButton, "[ Integrated Only ]", safeState.GraphicsModeSwitchSupported, safeState.CurrentGraphicsMode, GraphicsSwitcherMode.UMAMode);
         UpdateGraphicsButtonState(_hybridButton, "[ Hybrid ]", safeState.GraphicsModeSwitchSupported, safeState.CurrentGraphicsMode, GraphicsSwitcherMode.Hybrid);
         UpdateMaxFanCheckBoxState(safeState);
+        UpdateFanSpeedComboState(safeState);
 
         UpdateSummaryLabels();
         UpdatePowerSourceLabel();
@@ -411,7 +456,17 @@ internal sealed class MainForm : Form
             return;
         }
 
-        await _controller.SetMaxFanThermalModeAsync(_maxFanCheckBox.Checked);
+        await _controller.SetMaxFanAsync(_maxFanCheckBox.Checked);
+    }
+
+    private async Task OnFanSpeedSelectionChangedAsync()
+    {
+        if (_suppressFanMinimumUiUpdates)
+        {
+            return;
+        }
+
+        await _controller.SetFanMinimumOverrideRpmAsync(ParseSelectedFanMinimumRpm(_fanSpeedCombo));
     }
 
     private async Task SyncPowerSourceModeAsync()
@@ -460,6 +515,48 @@ internal sealed class MainForm : Form
     private static string GetComboSelectionText(ComboBox comboBox)
     {
         return comboBox.SelectedItem != null ? Convert.ToString(comboBox.SelectedItem) : "<none>";
+    }
+
+    private void SetFanSpeedSelection(int? rpm)
+    {
+        string target = FormatFanSpeedChoice(rpm);
+        for (int i = 0; i < _fanSpeedCombo.Items.Count; i++)
+        {
+            if (string.Equals(Convert.ToString(_fanSpeedCombo.Items[i]), target, StringComparison.OrdinalIgnoreCase))
+            {
+                _fanSpeedCombo.SelectedIndex = i;
+                return;
+            }
+        }
+
+        _fanSpeedCombo.SelectedIndex = 0;
+    }
+
+    private static int? ParseSelectedFanMinimumRpm(ComboBox comboBox)
+    {
+        string value = Convert.ToString(comboBox.SelectedItem);
+        if (string.IsNullOrWhiteSpace(value) || string.Equals(value, "Mode default", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (value.EndsWith(" RPM", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value.Substring(0, value.Length - 4).Trim();
+        }
+
+        int parsed;
+        if (int.TryParse(value, NumberStyles.Integer | NumberStyles.AllowThousands, CultureInfo.CurrentCulture, out parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static string FormatFanSpeedChoice(int? rpm)
+    {
+        return rpm.HasValue ? rpm.Value.ToString("N0") + " RPM" : "Mode default";
     }
 
     private static bool TryParseSelectedPowerMode(ComboBox comboBox, out PerformanceMode? mode)
@@ -528,6 +625,20 @@ internal sealed class MainForm : Form
         finally
         {
             _suppressMaxFanUiUpdates = false;
+        }
+    }
+
+    private void UpdateFanSpeedComboState(PerformanceControlState state)
+    {
+        try
+        {
+            _suppressFanMinimumUiUpdates = true;
+            _fanSpeedCombo.Enabled = state.Initialized && state.Available;
+            SetFanSpeedSelection(state.FanMinimumOverrideRpm);
+        }
+        finally
+        {
+            _suppressFanMinimumUiUpdates = false;
         }
     }
 
