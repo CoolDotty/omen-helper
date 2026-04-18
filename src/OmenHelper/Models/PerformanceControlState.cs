@@ -16,13 +16,11 @@ internal sealed class PerformanceControlState
 
     public string CurrentThermalMode { get; set; }
 
+    public bool MaxFanEnabled { get; set; }
+
     public string CurrentLegacyFanMode { get; set; }
 
     public int CurrentFanMinimumRpm { get; set; }
-
-    public decimal FanCurveSpinUpWindowSeconds { get; set; }
-
-    public decimal FanCurveSpinDownWindowSeconds { get; set; }
 
     public string CurrentGraphicsMode { get; set; }
 

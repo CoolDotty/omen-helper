@@ -39,8 +39,8 @@ internal sealed class OmenPerformanceController : IDisposable
     private bool _extremeUnlocked = true;
     private bool _unleashVisible = true;
     private ThermalModeOnUI _thermalModeUiType = (ThermalModeOnUI)0;
-    private PerformanceMode _batteryPowerMode = PerformanceMode.Eco;
-    private PerformanceMode _pluggedInPowerMode = PerformanceMode.Performance;
+    private PerformanceMode? _batteryPowerMode = PerformanceMode.Eco;
+    private PerformanceMode? _pluggedInPowerMode = PerformanceMode.Performance;
     private bool? _lastKnownPluggedIn;
     private bool _graphicsSupportsUma;
     private bool _graphicsSupportsHybrid;
@@ -78,14 +78,10 @@ internal sealed class OmenPerformanceController : IDisposable
     private int? _lastFanTargetBlobReturnCode;
     private bool? _lastFanTargetBlobExecuteResult;
     private readonly Queue<string> _recentEvents = new Queue<string>();
-    private readonly HardwareMonitorCpuTemperatureReader _temperatureReader = new HardwareMonitorCpuTemperatureReader();
-    private FanCurveController _fanCurveController;
 
     public event EventHandler<PerformanceControlState> StateChanged;
 
     public event EventHandler<string> LogMessage;
-
-    public event Action<int> FanMinimumBlobWritten;
 
     public OmenPerformanceController()
     {
@@ -177,26 +173,6 @@ internal sealed class OmenPerformanceController : IDisposable
             _available = true;
             TrackEvent("Firmware", "Read max fan=" + (maxFanEnabled ? "On" : "Off"));
             RaiseStateChanged();
-
-            // Initialize fan curve controller once and keep its existing enabled state on refresh.
-            try
-            {
-                if (_fanCurveController == null)
-                {
-                    _fanCurveController = new FanCurveController(_omenBiosClient);
-                    _fanCurveController.LogMessage += s => Log(s);
-                    _fanCurveController.FanMinimumBlobWritten += rpm =>
-                    {
-                        try { FanMinimumBlobWritten?.Invoke(rpm); } catch { }
-                    };
-                    _fanCurveController.SetEnabled(true); // first run: enable conservative default curve
-                    Log("Fan curve controller initialized and enabled.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log("Fan curve controller failed to start: " + ex.Message);
-            }
         }
         catch (Exception ex)
         {
@@ -384,6 +360,11 @@ internal sealed class OmenPerformanceController : IDisposable
         RaiseStateChanged();
     }
 
+    public Task SetMaxFanThermalModeAsync(bool enabled)
+    {
+        return SetThermalModeAsync(enabled ? ThermalControl.Max : ThermalControl.Auto);
+    }
+
     public async Task SetLegacyFanModeAsync(FanMode mode)
     {
         bool enableMaxFan = mode == FanMode.Turbo;
@@ -435,23 +416,23 @@ internal sealed class OmenPerformanceController : IDisposable
         }
     }
 
-    public PerformanceMode GetBatteryPowerModePreference()
+    public PerformanceMode? GetBatteryPowerModePreference()
     {
         return _batteryPowerMode;
     }
 
-    public PerformanceMode GetPluggedInPowerModePreference()
+    public PerformanceMode? GetPluggedInPowerModePreference()
     {
         return _pluggedInPowerMode;
     }
 
-    public void SetBatteryPowerModePreference(PerformanceMode mode)
+    public void SetBatteryPowerModePreference(PerformanceMode? mode)
     {
         _batteryPowerMode = NormalizePreferenceMode(mode);
         SavePowerModePreferences();
     }
 
-    public void SetPluggedInPowerModePreference(PerformanceMode mode)
+    public void SetPluggedInPowerModePreference(PerformanceMode? mode)
     {
         _pluggedInPowerMode = NormalizePreferenceMode(mode);
         SavePowerModePreferences();
@@ -462,20 +443,29 @@ internal sealed class OmenPerformanceController : IDisposable
         bool sourceChanged = !_lastKnownPluggedIn.HasValue || _lastKnownPluggedIn.Value != pluggedIn;
         _lastKnownPluggedIn = pluggedIn;
 
-        PerformanceMode targetMode = pluggedIn ? _pluggedInPowerMode : _batteryPowerMode;
-        if (!sourceChanged && (_currentModeKnown || _currentModeIsInferred) && _currentMode == targetMode)
+        // Only react when the detected power source actually changes.
+        // Preference edits should update the stored target, not immediately
+        // force a mode switch on the current source.
+        if (!sourceChanged)
         {
             return;
         }
 
-        if ((_currentModeKnown || _currentModeIsInferred) && _currentMode == targetMode)
+        PerformanceMode? targetMode = pluggedIn ? _pluggedInPowerMode : _batteryPowerMode;
+        if (!targetMode.HasValue)
         {
-            Log("Power source is " + (pluggedIn ? "AC" : "battery") + "; performance mode already set to " + FormatPerformanceMode(targetMode) + ".");
+            Log("Power source is " + (pluggedIn ? "AC" : "battery") + "; no automatic performance mode switch configured.");
             return;
         }
 
-        Log("Power source is " + (pluggedIn ? "AC" : "battery") + "; switching to " + FormatPerformanceMode(targetMode) + ".");
-        await SetPerformanceModeAsync(targetMode).ConfigureAwait(false);
+        if ((_currentModeKnown || _currentModeIsInferred) && _currentMode == targetMode.Value)
+        {
+            Log("Power source is " + (pluggedIn ? "AC" : "battery") + "; performance mode already set to " + FormatPerformanceMode(targetMode.Value) + ".");
+            return;
+        }
+
+        Log("Power source changed to " + (pluggedIn ? "AC" : "battery") + "; switching to " + FormatPerformanceMode(targetMode.Value) + ".");
+        await SetPerformanceModeAsync(targetMode.Value).ConfigureAwait(false);
     }
 
     private void RaiseStateChanged()
@@ -488,10 +478,9 @@ internal sealed class OmenPerformanceController : IDisposable
             CurrentMode = DescribeCurrentMode(),
             CurrentModeIsInferred = _currentModeIsInferred,
             CurrentThermalMode = _currentThermalMode.ToString(),
+            MaxFanEnabled = _currentThermalMode == ThermalControl.Max,
             CurrentLegacyFanMode = _currentLegacyFanMode.ToString(),
             CurrentFanMinimumRpm = GetFanMinimumRpmForMode(_currentMode),
-            FanCurveSpinUpWindowSeconds = _fanCurveController != null ? _fanCurveController.GetSpinUpWindowSeconds() : 5m,
-            FanCurveSpinDownWindowSeconds = _fanCurveController != null ? _fanCurveController.GetSpinDownWindowSeconds() : 30m,
             CurrentGraphicsMode = _currentGraphicsMode.ToString(),
             GraphicsModeSwitchSupported = _graphicsModeSwitchSupported,
             GraphicsSupportsUma = _graphicsSupportsUma,
@@ -537,15 +526,16 @@ internal sealed class OmenPerformanceController : IDisposable
             }
 
             string persisted = File.ReadAllText(_performanceModeStatePath).Trim();
-            if (!TryParseRememberedPerformanceMode(persisted, out PerformanceMode mode))
+            PerformanceMode? mode;
+            if (!TryParseRememberedPerformanceMode(persisted, out mode) || !mode.HasValue)
             {
                 Log("Ignored persisted performance mode value: " + persisted);
                 return;
             }
 
-            _currentMode = mode;
+            _currentMode = mode.Value;
             _currentModeIsInferred = true;
-            Log("Loaded remembered performance mode: " + PerformanceModeFirmwareMap.FormatDisplayName(mode));
+            Log("Loaded remembered performance mode: " + PerformanceModeFirmwareMap.FormatDisplayName(mode.Value));
         }
         catch (Exception ex)
         {
@@ -597,7 +587,7 @@ internal sealed class OmenPerformanceController : IDisposable
 
                 string key = parts[0].Trim();
                 string value = parts[1].Trim();
-                if (!TryParsePreferenceMode(value, out PerformanceMode parsed))
+                if (!TryParsePreferenceMode(value, out PerformanceMode? parsed))
                 {
                     continue;
                 }
@@ -612,7 +602,7 @@ internal sealed class OmenPerformanceController : IDisposable
                 }
             }
 
-            Log("Loaded power mode preferences: battery=" + PerformanceModeFirmwareMap.FormatDisplayName(_batteryPowerMode) + ", pluggedIn=" + PerformanceModeFirmwareMap.FormatDisplayName(_pluggedInPowerMode));
+            Log("Loaded power mode preferences: battery=" + FormatPowerModePreference(_batteryPowerMode) + ", pluggedIn=" + FormatPowerModePreference(_pluggedInPowerMode));
         }
         catch (Exception ex)
         {
@@ -632,8 +622,8 @@ internal sealed class OmenPerformanceController : IDisposable
 
             File.WriteAllLines(_powerModePreferencePath, new[]
             {
-                "battery=" + _batteryPowerMode,
-                "pluggedin=" + _pluggedInPowerMode
+                "battery=" + FormatPowerModePreference(_batteryPowerMode),
+                "pluggedin=" + FormatPowerModePreference(_pluggedInPowerMode)
             });
         }
         catch (Exception ex)
@@ -642,14 +632,19 @@ internal sealed class OmenPerformanceController : IDisposable
         }
     }
 
-    private static bool TryParsePreferenceMode(string value, out PerformanceMode mode)
+    private static bool TryParsePreferenceMode(string value, out PerformanceMode? mode)
     {
         return TryParseRememberedPerformanceMode(value, out mode);
     }
 
-    private static PerformanceMode NormalizePreferenceMode(PerformanceMode mode)
+    private static PerformanceMode? NormalizePreferenceMode(PerformanceMode? mode)
     {
-        if (mode == PerformanceMode.Eco || mode == PerformanceMode.Default || mode == PerformanceMode.Performance || IsUnleashedMode(mode))
+        if (!mode.HasValue)
+        {
+            return null;
+        }
+
+        if (mode.Value == PerformanceMode.Eco || mode.Value == PerformanceMode.Default || mode.Value == PerformanceMode.Performance || IsUnleashedMode(mode.Value))
         {
             return mode;
         }
@@ -657,9 +652,28 @@ internal sealed class OmenPerformanceController : IDisposable
         return PerformanceMode.Default;
     }
 
-    private static bool TryParseRememberedPerformanceMode(string value, out PerformanceMode mode)
+    private static bool TryParseRememberedPerformanceMode(string value, out PerformanceMode? mode)
     {
-        return PerformanceModeFirmwareMap.TryParseDisplayName(value, out mode);
+        if (string.Equals(value, "None", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(value))
+        {
+            mode = null;
+            return true;
+        }
+
+        PerformanceMode parsed;
+        if (PerformanceModeFirmwareMap.TryParseDisplayName(value, out parsed))
+        {
+            mode = parsed;
+            return true;
+        }
+
+        mode = null;
+        return false;
+    }
+
+    private static string FormatPowerModePreference(PerformanceMode? mode)
+    {
+        return mode.HasValue ? PerformanceModeFirmwareMap.FormatDisplayName(mode.Value) : "None";
     }
 
     private static byte MapPerformanceModeToType26Value(PerformanceMode mode)
@@ -882,7 +896,7 @@ internal sealed class OmenPerformanceController : IDisposable
     {
         if (thermalControl == ThermalControl.Manual)
         {
-            Log("ThermalControl.Manual is not implemented (would require custom fan curve control).");
+            Log("ThermalControl.Manual is not supported.");
             return false;
         }
 
@@ -1141,99 +1155,7 @@ internal sealed class OmenPerformanceController : IDisposable
         }
 
         _disposed = true;
-        _fanCurveController?.Dispose();
-        _temperatureReader.Dispose();
         _omenBiosClient?.Dispose();
     }
 
-    // Fan curve UI integration helpers
-    public bool IsFanCurveEnabled()
-    {
-        return _fanCurveController != null && _fanCurveController.Enabled;
-    }
-
-    public void SetFanCurveEnabled(bool enabled)
-    {
-        _fanCurveController?.SetEnabled(enabled);
-    }
-
-    public IReadOnlyList<(int Temp, int Rpm)> GetFanCurvePoints()
-    {
-        return _fanCurveController?.GetPoints();
-    }
-
-    public void SetFanCurvePoints(IEnumerable<(int Temp, int Rpm)> points)
-    {
-        _fanCurveController?.SetPoints(points);
-    }
-
-    public void ResetFanCurveToDefault()
-    {
-        _fanCurveController?.ResetToDefault();
-    }
-
-    public string GetFanCurvePath()
-    {
-        return _fanCurveController?.GetSettingsPath();
-    }
-
-    public decimal GetFanCurveSpinUpWindowSeconds()
-    {
-        return _fanCurveController != null ? _fanCurveController.GetSpinUpWindowSeconds() : 5m;
-    }
-
-    public decimal GetFanCurveSpinDownWindowSeconds()
-    {
-        return _fanCurveController != null ? _fanCurveController.GetSpinDownWindowSeconds() : 30m;
-    }
-
-    public void SetFanCurveSpinUpWindowSeconds(decimal value)
-    {
-        _fanCurveController?.SetSpinUpWindowSeconds(value);
-    }
-
-    public void SetFanCurveSpinDownWindowSeconds(decimal value)
-    {
-        _fanCurveController?.SetSpinDownWindowSeconds(value);
-    }
-
-    public bool TryGetFanTelemetry(out double currentTemp, out double spinUpAverageTemp, out double spinDownAverageTemp)
-    {
-        if (_fanCurveController != null)
-        {
-            return _fanCurveController.TryGetTelemetry(out currentTemp, out spinUpAverageTemp, out spinDownAverageTemp);
-        }
-
-        currentTemp = double.NaN;
-        spinUpAverageTemp = double.NaN;
-        spinDownAverageTemp = double.NaN;
-        return false;
-    }
-
-    public bool TryGetFanCurveTargetRpm(double temp, out int rpm)
-    {
-        if (_fanCurveController != null)
-        {
-            return _fanCurveController.TryGetTargetRpm(temp, out rpm);
-        }
-
-        rpm = 0;
-        return false;
-    }
-
-    public bool TryGetTemperatureSnapshot(out double cpuCoreAverage, out double gpuTemperature, out double chassisTemperature)
-    {
-        bool hasTemps = _temperatureReader.TryGetTemperatureSnapshot(out cpuCoreAverage, out gpuTemperature, out chassisTemperature);
-
-        if (double.IsNaN(chassisTemperature) && _omenBiosClient != null)
-        {
-            if (_omenBiosClient.TryGetTemperature(out double biosChassisTemperature) && biosChassisTemperature >= 0)
-            {
-                chassisTemperature = biosChassisTemperature;
-                hasTemps = true;
-            }
-        }
-
-        return hasTemps;
-    }
 }
