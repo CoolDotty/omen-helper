@@ -3,8 +3,8 @@ setlocal
 
 set "ROOT=%~dp0"
 set "DOTNET=C:\Program Files\dotnet\dotnet.exe"
-set "PROJECT=%ROOT%OmenHelper.csproj"
-set "OUTPUT=%ROOT%bin\Debug\net48\OmenHelper.exe"
+set "SOLUTION=%ROOT%OmenHelper.sln"
+set "OUTPUT=%ROOT%src\OmenHelper\bin\Debug\net48\OmenHelper.exe"
 
 if not exist "%DOTNET%" (
   echo dotnet not found at "%DOTNET%"
@@ -12,7 +12,7 @@ if not exist "%DOTNET%" (
 )
 
 echo Building OmenHelper...
-"%DOTNET%" build "%PROJECT%"
+"%DOTNET%" build "%SOLUTION%"
 if errorlevel 1 exit /b 1
 
 echo.

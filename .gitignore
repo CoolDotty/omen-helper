@@ -1,6 +1,11 @@
 # Reverse-engineering artifacts
 dlldumps/
 OmenMon/
+bin_temp*/
+
+# Local CLI state / sandbox artifacts
+.dotnet/
+NUL
 
 # Build outputs
 bin/
@@ -9,6 +14,8 @@ Debug/
 Release/
 x64/
 x86/
+artifacts/
+TestResults/
 
 # Visual Studio / Rider
 .vs/

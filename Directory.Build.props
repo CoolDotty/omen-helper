@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <HpSystemOptimizerRoot Condition="'$(HpSystemOptimizerRoot)' == ''">C:\Program Files\HP\SystemOptimizer</HpSystemOptimizerRoot>
+  </PropertyGroup>
+</Project>

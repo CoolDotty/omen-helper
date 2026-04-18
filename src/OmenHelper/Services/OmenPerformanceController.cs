@@ -24,6 +24,7 @@ internal sealed class OmenPerformanceController : IDisposable
     private readonly OmenBiosClient _omenBiosClient = new OmenBiosClient();
     private readonly object _diagnosticsSync = new object();
     private readonly string _performanceModeStatePath;
+    private readonly string _powerModePreferencePath;
 
     private bool _started;
     private bool _disposed;
@@ -38,6 +39,9 @@ internal sealed class OmenPerformanceController : IDisposable
     private bool _extremeUnlocked = true;
     private bool _unleashVisible = true;
     private ThermalModeOnUI _thermalModeUiType = (ThermalModeOnUI)0;
+    private PerformanceMode _batteryPowerMode = PerformanceMode.Eco;
+    private PerformanceMode _pluggedInPowerMode = PerformanceMode.Performance;
+    private bool? _lastKnownPluggedIn;
     private bool _graphicsSupportsUma;
     private bool _graphicsSupportsHybrid;
     private bool _graphicsModeSwitchSupported;
@@ -74,6 +78,8 @@ internal sealed class OmenPerformanceController : IDisposable
     private int? _lastFanTargetBlobReturnCode;
     private bool? _lastFanTargetBlobExecuteResult;
     private readonly Queue<string> _recentEvents = new Queue<string>();
+    private readonly HardwareMonitorCpuTemperatureReader _temperatureReader = new HardwareMonitorCpuTemperatureReader();
+    private FanCurveController _fanCurveController;
 
     public event EventHandler<PerformanceControlState> StateChanged;
 
@@ -86,6 +92,10 @@ internal sealed class OmenPerformanceController : IDisposable
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "OmenHelper",
             "performance-mode.txt");
+        _powerModePreferencePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "OmenHelper",
+            "power-mode-preferences.txt");
     }
 
     public void Start()
@@ -108,13 +118,14 @@ internal sealed class OmenPerformanceController : IDisposable
 
         _supportModes = new List<string>
         {
-            FormatPerformanceMode(PerformanceMode.Default),
-            FormatPerformanceMode(PerformanceMode.Performance),
-            FormatPerformanceMode(PerformanceMode.Eco),
-            "Unleashed"
+            PerformanceModeFirmwareMap.FormatDisplayName(PerformanceMode.Default),
+            PerformanceModeFirmwareMap.FormatDisplayName(PerformanceMode.Performance),
+            PerformanceModeFirmwareMap.FormatDisplayName(PerformanceMode.Eco),
+            PerformanceModeFirmwareMap.FormatDisplayName(PerformanceMode.Extreme)
         };
         _currentModeKnown = false;
         LoadRememberedPerformanceMode();
+        LoadPowerModePreferences();
 
         _started = true;
 
@@ -164,6 +175,22 @@ internal sealed class OmenPerformanceController : IDisposable
             _available = true;
             TrackEvent("Firmware", "Read max fan=" + (maxFanEnabled ? "On" : "Off"));
             RaiseStateChanged();
+
+            // Initialize fan curve controller once and keep its existing enabled state on refresh.
+            try
+            {
+                if (_fanCurveController == null)
+                {
+                    _fanCurveController = new FanCurveController(_omenBiosClient);
+                    _fanCurveController.LogMessage += s => Log(s);
+                    _fanCurveController.SetEnabled(true); // first run: enable conservative default curve
+                    Log("Fan curve controller initialized and enabled.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("Fan curve controller failed to start: " + ex.Message);
+            }
         }
         catch (Exception ex)
         {
@@ -402,6 +429,49 @@ internal sealed class OmenPerformanceController : IDisposable
         }
     }
 
+    public PerformanceMode GetBatteryPowerModePreference()
+    {
+        return _batteryPowerMode;
+    }
+
+    public PerformanceMode GetPluggedInPowerModePreference()
+    {
+        return _pluggedInPowerMode;
+    }
+
+    public void SetBatteryPowerModePreference(PerformanceMode mode)
+    {
+        _batteryPowerMode = NormalizePreferenceMode(mode);
+        SavePowerModePreferences();
+    }
+
+    public void SetPluggedInPowerModePreference(PerformanceMode mode)
+    {
+        _pluggedInPowerMode = NormalizePreferenceMode(mode);
+        SavePowerModePreferences();
+    }
+
+    public async Task SyncPowerSourcePerformanceModeAsync(bool pluggedIn)
+    {
+        bool sourceChanged = !_lastKnownPluggedIn.HasValue || _lastKnownPluggedIn.Value != pluggedIn;
+        _lastKnownPluggedIn = pluggedIn;
+
+        PerformanceMode targetMode = pluggedIn ? _pluggedInPowerMode : _batteryPowerMode;
+        if (!sourceChanged && (_currentModeKnown || _currentModeIsInferred) && _currentMode == targetMode)
+        {
+            return;
+        }
+
+        if ((_currentModeKnown || _currentModeIsInferred) && _currentMode == targetMode)
+        {
+            Log("Power source is " + (pluggedIn ? "AC" : "battery") + "; performance mode already set to " + FormatPerformanceMode(targetMode) + ".");
+            return;
+        }
+
+        Log("Power source is " + (pluggedIn ? "AC" : "battery") + "; switching to " + FormatPerformanceMode(targetMode) + ".");
+        await SetPerformanceModeAsync(targetMode).ConfigureAwait(false);
+    }
+
     private void RaiseStateChanged()
     {
         StateChanged?.Invoke(this, new PerformanceControlState
@@ -414,6 +484,9 @@ internal sealed class OmenPerformanceController : IDisposable
             CurrentThermalMode = _currentThermalMode.ToString(),
             CurrentLegacyFanMode = _currentLegacyFanMode.ToString(),
             CurrentFanMinimumRpm = GetFanMinimumRpmForMode(_currentMode),
+            FanCurveSpinUpWindowMs = _fanCurveController != null ? _fanCurveController.GetSpinUpWindowMs() : 5000,
+            FanCurveSpinDownWindowMs = _fanCurveController != null ? _fanCurveController.GetSpinDownWindowMs() : 15000,
+            FanCurveBreakpointPaddingCelsius = _fanCurveController != null ? _fanCurveController.GetBreakpointPaddingCelsius() : 5,
             CurrentGraphicsMode = _currentGraphicsMode.ToString(),
             GraphicsModeSwitchSupported = _graphicsModeSwitchSupported,
             GraphicsSupportsUma = _graphicsSupportsUma,
@@ -431,29 +504,19 @@ internal sealed class OmenPerformanceController : IDisposable
 
     private static bool IsUnleashedMode(PerformanceMode mode)
     {
-        return mode == PerformanceMode.Extreme || (int)mode == 4;
+        return PerformanceModeFirmwareMap.IsUnleashedMode(mode);
     }
 
     private static string FormatPerformanceMode(PerformanceMode mode)
     {
-        if (mode == PerformanceMode.Default)
-        {
-            return "Balanced";
-        }
-
-        if (mode == PerformanceMode.Extreme)
-        {
-            return "Unleashed";
-        }
-
-        return mode.ToString();
+        return PerformanceModeFirmwareMap.FormatDisplayName(mode);
     }
 
     private string DescribeCurrentMode()
     {
         if (_currentModeKnown || _currentModeIsInferred)
         {
-            return FormatPerformanceMode(_currentMode);
+            return PerformanceModeFirmwareMap.FormatDisplayName(_currentMode);
         }
 
         return "Unknown";
@@ -477,7 +540,7 @@ internal sealed class OmenPerformanceController : IDisposable
 
             _currentMode = mode;
             _currentModeIsInferred = true;
-            Log("Loaded remembered performance mode: " + FormatPerformanceMode(mode));
+            Log("Loaded remembered performance mode: " + PerformanceModeFirmwareMap.FormatDisplayName(mode));
         }
         catch (Exception ex)
         {
@@ -503,47 +566,105 @@ internal sealed class OmenPerformanceController : IDisposable
         }
     }
 
+    private void LoadPowerModePreferences()
+    {
+        try
+        {
+            if (!File.Exists(_powerModePreferencePath))
+            {
+                return;
+            }
+
+            string[] lines = File.ReadAllLines(_powerModePreferencePath);
+            foreach (string rawLine in lines)
+            {
+                string line = rawLine.Trim();
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                string[] parts = line.Split(new[] { '=' }, 2);
+                if (parts.Length != 2)
+                {
+                    continue;
+                }
+
+                string key = parts[0].Trim();
+                string value = parts[1].Trim();
+                if (!TryParsePreferenceMode(value, out PerformanceMode parsed))
+                {
+                    continue;
+                }
+
+                if (string.Equals(key, "battery", StringComparison.OrdinalIgnoreCase))
+                {
+                    _batteryPowerMode = parsed;
+                }
+                else if (string.Equals(key, "pluggedin", StringComparison.OrdinalIgnoreCase) || string.Equals(key, "ac", StringComparison.OrdinalIgnoreCase))
+                {
+                    _pluggedInPowerMode = parsed;
+                }
+            }
+
+            Log("Loaded power mode preferences: battery=" + PerformanceModeFirmwareMap.FormatDisplayName(_batteryPowerMode) + ", pluggedIn=" + PerformanceModeFirmwareMap.FormatDisplayName(_pluggedInPowerMode));
+        }
+        catch (Exception ex)
+        {
+            Log("Power mode preference load failed: " + ex.Message);
+        }
+    }
+
+    private void SavePowerModePreferences()
+    {
+        try
+        {
+            string directory = Path.GetDirectoryName(_powerModePreferencePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllLines(_powerModePreferencePath, new[]
+            {
+                "battery=" + _batteryPowerMode,
+                "pluggedin=" + _pluggedInPowerMode
+            });
+        }
+        catch (Exception ex)
+        {
+            Log("Power mode preference save failed: " + ex.Message);
+        }
+    }
+
+    private static bool TryParsePreferenceMode(string value, out PerformanceMode mode)
+    {
+        return TryParseRememberedPerformanceMode(value, out mode);
+    }
+
+    private static PerformanceMode NormalizePreferenceMode(PerformanceMode mode)
+    {
+        if (mode == PerformanceMode.Eco || mode == PerformanceMode.Default || mode == PerformanceMode.Performance || IsUnleashedMode(mode))
+        {
+            return mode;
+        }
+
+        return PerformanceMode.Default;
+    }
+
     private static bool TryParseRememberedPerformanceMode(string value, out PerformanceMode mode)
     {
-        if (string.Equals(value, "Balanced", StringComparison.OrdinalIgnoreCase))
-        {
-            mode = PerformanceMode.Default;
-            return true;
-        }
-
-        if (string.Equals(value, "Unleashed", StringComparison.OrdinalIgnoreCase))
-        {
-            mode = PerformanceMode.Extreme;
-            return true;
-        }
-
-        return Enum.TryParse(value, true, out mode);
+        return PerformanceModeFirmwareMap.TryParseDisplayName(value, out mode);
     }
 
     private static byte MapPerformanceModeToType26Value(PerformanceMode mode)
     {
-        switch (mode)
-        {
-            case PerformanceMode.Eco:
-            case PerformanceMode.Default:
-                return 48;
-            case PerformanceMode.Performance:
-                return 49;
-            default:
-                return IsUnleashedMode(mode) ? (byte)4 : (byte)0;
-        }
+        return PerformanceModeFirmwareMap.GetType26Value(mode);
     }
 
     private static byte[] MapPerformanceModeToType34Payload(PerformanceMode mode)
     {
-        bool isEco = mode == PerformanceMode.Eco;
-        bool isPerfLike = mode == PerformanceMode.Performance || IsUnleashedMode(mode);
-
-        byte tgpEnable = isPerfLike ? (byte)1 : (byte)0;
-        byte ppabEnable = isEco ? (byte)0 : (byte)1;
-        byte dState = 1;
-        byte gps = 87;
-        return new[] { tgpEnable, ppabEnable, dState, gps };
+        return PerformanceModeFirmwareMap.GetType34Payload(mode);
     }
 
     private async Task<bool> TrySetPerformanceModeFirmwareAsync(PerformanceMode mode)
@@ -567,8 +688,8 @@ internal sealed class OmenPerformanceController : IDisposable
             foreach (byte[] payload in type26Candidates)
             {
                 if (await TryFirmwareSetAsync(
-                    command: 131080,
-                    commandType: 26,
+                    command: BiosCommandCatalog.PerformancePlatformCommand,
+                    commandType: BiosCommandCatalog.PerformanceModeType,
                     payload: payload,
                     returnDataSize: 4,
                     logPrefix: "Firmware SetMode",
@@ -590,8 +711,8 @@ internal sealed class OmenPerformanceController : IDisposable
 
             byte[] type34 = MapPerformanceModeToType34Payload(mode);
             bool type34Ok = await TryFirmwareSetAsync(
-                command: 131080,
-                commandType: 34,
+                command: BiosCommandCatalog.PerformancePlatformCommand,
+                commandType: BiosCommandCatalog.PerformanceGpuPowerType,
                 payload: type34,
                 returnDataSize: 4,
                 logPrefix: "Firmware GPU status",
@@ -613,12 +734,12 @@ internal sealed class OmenPerformanceController : IDisposable
                     255,
                     255,
                     255,
-                    45
+                    BiosCommandCatalog.PerformanceTpptdpPayload
                 };
 
                 bool type41Ok = await TryFirmwareSetAsync(
-                    command: 131080,
-                    commandType: 41,
+                    command: BiosCommandCatalog.PerformancePlatformCommand,
+                    commandType: BiosCommandCatalog.PerformanceTpptdpType,
                     payload: type41Payload,
                     returnDataSize: 4,
                     logPrefix: "Firmware TPP/TDP",
@@ -784,17 +905,7 @@ internal sealed class OmenPerformanceController : IDisposable
 
     private static int GetFanMinimumRpmForMode(PerformanceMode mode)
     {
-        switch (mode)
-        {
-            case PerformanceMode.Eco:
-                return 0;
-            case PerformanceMode.Performance:
-            case PerformanceMode.Extreme:
-                return 2800;
-            case PerformanceMode.Default:
-            default:
-                return 2200;
-        }
+        return PerformanceModeFirmwareMap.GetFanMinimumRpm(mode);
     }
 
     private static string FormatInputData(byte[] data)
@@ -1020,6 +1131,98 @@ internal sealed class OmenPerformanceController : IDisposable
         }
 
         _disposed = true;
+        _fanCurveController?.Dispose();
+        _temperatureReader.Dispose();
         _omenBiosClient?.Dispose();
+    }
+
+    // Fan curve UI integration helpers
+    public bool IsFanCurveEnabled()
+    {
+        return _fanCurveController != null && _fanCurveController.Enabled;
+    }
+
+    public void SetFanCurveEnabled(bool enabled)
+    {
+        _fanCurveController?.SetEnabled(enabled);
+    }
+
+    public IReadOnlyList<(int Temp, int Rpm)> GetFanCurvePoints()
+    {
+        return _fanCurveController?.GetPoints();
+    }
+
+    public void SetFanCurvePoints(IEnumerable<(int Temp, int Rpm)> points)
+    {
+        _fanCurveController?.SetPoints(points);
+    }
+
+    public void ResetFanCurveToDefault()
+    {
+        _fanCurveController?.ResetToDefault();
+    }
+
+    public string GetFanCurvePath()
+    {
+        return _fanCurveController?.GetSettingsPath();
+    }
+
+    public int GetFanCurveSpinUpWindowMs()
+    {
+        return _fanCurveController != null ? _fanCurveController.GetSpinUpWindowMs() : 5000;
+    }
+
+    public int GetFanCurveSpinDownWindowMs()
+    {
+        return _fanCurveController != null ? _fanCurveController.GetSpinDownWindowMs() : 15000;
+    }
+
+    public int GetFanCurveBreakpointPaddingCelsius()
+    {
+        return _fanCurveController != null ? _fanCurveController.GetBreakpointPaddingCelsius() : 5;
+    }
+
+    public void SetFanCurveSpinUpWindowMs(int value)
+    {
+        _fanCurveController?.SetSpinUpWindowMs(value);
+    }
+
+    public void SetFanCurveSpinDownWindowMs(int value)
+    {
+        _fanCurveController?.SetSpinDownWindowMs(value);
+    }
+
+    public void SetFanCurveBreakpointPaddingCelsius(int value)
+    {
+        _fanCurveController?.SetBreakpointPaddingCelsius(value);
+    }
+
+    public bool TryGetFanTelemetry(out double currentTemp, out double spinUpAverageTemp, out double spinDownAverageTemp)
+    {
+        if (_fanCurveController != null)
+        {
+            return _fanCurveController.TryGetTelemetry(out currentTemp, out spinUpAverageTemp, out spinDownAverageTemp);
+        }
+
+        currentTemp = double.NaN;
+        spinUpAverageTemp = double.NaN;
+        spinDownAverageTemp = double.NaN;
+        return false;
+    }
+
+    public bool TryGetTemperatureSnapshot(out double cpuCoreAverage, out double gpuTemperature, out double chassisTemperature)
+    {
+        bool hasTemps = _temperatureReader.TryGetTemperatureSnapshot(out cpuCoreAverage, out gpuTemperature, out chassisTemperature);
+
+        if (double.IsNaN(chassisTemperature) && _omenBiosClient != null)
+        {
+            if (_omenBiosClient.TryGetTemperature(out double biosChassisTemperature) && biosChassisTemperature >= 0)
+            {
+                chassisTemperature = biosChassisTemperature;
+                hasTemps = true;
+            }
+        }
+
+        return hasTemps;
     }
 }

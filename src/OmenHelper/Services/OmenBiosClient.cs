@@ -12,8 +12,6 @@ internal sealed class OmenBiosClient : IDisposable
     private const string BiosDataClassName = "hpqBDataIn";
     private const string BiosMethodsClassName = "hpqBIntM";
     private const string BiosMethodsInstanceName = @"ACPI\PNP0C14\0_0";
-    private static readonly byte[] SharedSign = { 0x53, 0x45, 0x43, 0x55 };
-
     private readonly object _sync = new object();
     private ManagementScope _scope;
     private ManagementClass _biosDataClass;
@@ -86,7 +84,7 @@ internal sealed class OmenBiosClient : IDisposable
             {
                 using (ManagementObject input = _biosDataClass.CreateInstance())
                 {
-                    input["Sign"] = SharedSign;
+                    input["Sign"] = BiosCommandCatalog.SharedSign;
                     input["Command"] = (uint)command;
                     input["CommandType"] = (uint)commandType;
                     input["Size"] = (uint)(inputData != null ? inputData.Length : 0);
@@ -128,7 +126,7 @@ internal sealed class OmenBiosClient : IDisposable
     {
         return Task.Run(() =>
         {
-            BiosWmiResult result = Execute(131080, 38, new byte[4], 4);
+            BiosWmiResult result = Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.MaxFanReadType, new byte[4], 4);
             if (!result.ExecuteResult || result.ReturnData.Length == 0)
             {
                 throw new InvalidOperationException(LastError.Length > 0 ? LastError : "MaxFan read failed.");
@@ -143,21 +141,21 @@ internal sealed class OmenBiosClient : IDisposable
         return Task.Run(() =>
         {
             byte mode = enabled ? (byte)1 : (byte)0;
-            BiosWmiResult result = Execute(131080, 39, new[] { mode }, 4);
+            BiosWmiResult result = Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.MaxFanWriteType, new[] { mode }, 4);
             return result.ExecuteResult && result.ReturnCode == 0;
         });
     }
 
     public Task<BiosWmiResult> SetPerformanceStatusBlobAsync(byte[] blob)
     {
-        return Task.Run(() => Execute(131080, 46, NormalizeBlob(blob), 4));
+        return Task.Run(() => Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.PerformanceStatusWriteType, NormalizeBlob(blob), 4));
     }
 
     public Task<GraphicsSwitcherMode> GetGraphicsModeAsync()
     {
         return Task.Run(() =>
         {
-            BiosWmiResult result = Execute(1, 82, null, 4);
+            BiosWmiResult result = Execute(BiosCommandCatalog.GraphicsModeReadCommand, BiosCommandCatalog.GraphicsModeCommand, null, 4);
             if (!result.ExecuteResult || result.ReturnData.Length == 0)
             {
                 return GraphicsSwitcherMode.Unknown;
@@ -171,14 +169,41 @@ internal sealed class OmenBiosClient : IDisposable
     {
         return Task.Run(() =>
         {
-            BiosWmiResult result = Execute(2, 82, new byte[4] { (byte)mode, 0, 0, 0 }, 4);
+            BiosWmiResult result = Execute(BiosCommandCatalog.GraphicsModeWriteCommand, BiosCommandCatalog.GraphicsModeCommand, BiosCommandCatalog.BuildGraphicsModePayload(mode), 4);
             return result.ExecuteResult ? result.ReturnCode : -1;
         });
     }
 
     public Task<BiosWmiResult> GetPerformanceStatusBlobAsync()
     {
-        return Task.Run(() => Execute(131080, 45, new byte[4], 128));
+        return Task.Run(() => Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.PerformanceStatusReadType, new byte[4], 128));
+    }
+
+    // Read small temperature-ish value (observed HP method dtGetTemperature uses commandType=35).
+    // The input byte[1] selects the observed chassis sensor; returns -1 on failure.
+    public bool TryGetTemperature(out double temperature)
+    {
+        temperature = double.NaN;
+
+        // Observed input used by HP: input[1] = 1.
+        byte[] input = new byte[4] { 0, 1, 0, 0 };
+        BiosWmiResult result = Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.TemperatureType, input, 4);
+        if (!result.ExecuteResult || result.ReturnData == null || result.ReturnData.Length == 0)
+        {
+            LastError = string.IsNullOrEmpty(LastError) ? "Temperature read failed." : LastError;
+            return false;
+        }
+
+        temperature = result.ReturnData[0];
+        return true;
+    }
+
+    public Task<int> GetTemperatureAsync()
+    {
+        return Task.Run(() =>
+        {
+            return TryGetTemperature(out double temperature) ? (int)temperature : -1;
+        });
     }
 
     public Task<byte[]> GetSystemDesignDataAsync()
@@ -187,7 +212,7 @@ internal sealed class OmenBiosClient : IDisposable
         {
             for (int attempt = 0; attempt < 3; attempt++)
             {
-                BiosWmiResult result = Execute(131080, 40, null, 128);
+                BiosWmiResult result = Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.SystemDesignDataType, null, 128);
                 if (result.ExecuteResult && result.ReturnCode == 0)
                 {
                     return result.ReturnData;
@@ -206,7 +231,7 @@ internal sealed class OmenBiosClient : IDisposable
         {
             for (int attempt = 0; attempt < 3; attempt++)
             {
-                BiosWmiResult result = Execute(131080, 40, null, 128);
+                BiosWmiResult result = Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.SystemDesignDataType, null, 128);
                 if (result.ExecuteResult && result.ReturnCode == 0 && result.ReturnData.Length >= 9)
                 {
                     byte rawGpuModeSwitch = result.ReturnData[7];

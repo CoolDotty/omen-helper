@@ -18,11 +18,18 @@ internal sealed class MainForm : Form
     private readonly Label _graphicsLabel = new Label();
     private readonly Label _graphicsModeNoteLabel = new Label();
     private readonly ComboBox _thermalModeCombo = new ComboBox();
+    private readonly ComboBox _batteryModeCombo = new ComboBox();
+    private readonly ComboBox _pluggedModeCombo = new ComboBox();
+    private readonly Label _powerSourceLabel = new Label();
+    private readonly Label _fanTempStatsLabel = new Label();
     private readonly TextBox _logTextBox = new TextBox();
     private readonly Dictionary<PerformanceMode, Button> _modeButtons = new Dictionary<PerformanceMode, Button>();
     private Button _umaButton;
     private Button _hybridButton;
     private DiagnosticsForm _diagnosticsForm;
+    private readonly Timer _powerModeTimer = new Timer();
+    private readonly Timer _fanTempTimer = new Timer();
+    private bool _suppressPowerModeUiUpdates;
 
     public MainForm()
     {
@@ -35,6 +42,10 @@ internal sealed class MainForm : Form
 
         Load += OnLoad;
         FormClosing += OnFormClosing;
+        _powerModeTimer.Interval = 3000;
+        _powerModeTimer.Tick += async (_, __) => await SyncPowerSourceModeAsync();
+        _fanTempTimer.Interval = 1000;
+        _fanTempTimer.Tick += (_, __) => UpdateFanTempStats();
     }
 
     private void InitializeUi()
@@ -45,9 +56,10 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 6,
             Padding = new Padding(16)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -106,21 +118,14 @@ internal sealed class MainForm : Form
         controlsRow.Controls.Add(BuildThermalGroup(), 0, 0);
         controlsRow.Controls.Add(BuildActionsGroup(), 1, 0);
         controlsRow.Controls.Add(BuildGraphicsGroup(), 0, 1);
-
-        GroupBox spacer = new GroupBox
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            Padding = new Padding(12),
-            Margin = new Padding(0, 0, 0, 12)
-        };
-        controlsRow.Controls.Add(spacer, 1, 1);
+        controlsRow.Controls.Add(BuildPowerModeGroup(), 1, 1);
 
         root.Controls.Add(header, 0, 0);
         root.Controls.Add(_statusLabel, 0, 1);
         root.Controls.Add(_graphicsLabel, 0, 2);
         root.Controls.Add(modeGroup, 0, 3);
         root.Controls.Add(controlsRow, 0, 4);
+        root.Controls.Add(BuildFanTempGroup(), 0, 5);
 
         GroupBox logGroup = new GroupBox
         {
@@ -226,9 +231,17 @@ internal sealed class MainForm : Form
         };
         diagnosticsButton.Click += (_, __) => ShowDiagnosticsWindow();
 
+        Button fanCurveButton = new Button
+        {
+            Text = "Fan Curve Manager",
+            AutoSize = true
+        };
+        fanCurveButton.Click += (_, __) => ShowFanCurveManager();
+
         actionPanel.Controls.Add(refreshButton);
         actionPanel.Controls.Add(notesButton);
         actionPanel.Controls.Add(diagnosticsButton);
+        actionPanel.Controls.Add(fanCurveButton);
         actionGroup.Controls.Add(actionPanel);
         return actionGroup;
     }
@@ -276,6 +289,91 @@ internal sealed class MainForm : Form
         return graphicsGroup;
     }
 
+    private GroupBox BuildPowerModeGroup()
+    {
+        GroupBox powerGroup = new GroupBox
+        {
+            Text = "Power Source Modes",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            Padding = new Padding(12),
+            Margin = new Padding(0, 0, 0, 12)
+        };
+
+        TableLayoutPanel panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 3
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        Label batteryLabel = new Label
+        {
+            Text = "On battery:",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 6, 8, 6)
+        };
+        Label pluggedLabel = new Label
+        {
+            Text = "Plugged in:",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 6, 8, 6)
+        };
+
+        _batteryModeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _batteryModeCombo.Width = 180;
+        _batteryModeCombo.Items.AddRange(new object[] { "Eco", "Balanced", "Performance", "Unleashed" });
+        _batteryModeCombo.SelectedIndexChanged += async (_, __) => await OnPowerModeSelectionChangedAsync();
+
+        _pluggedModeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _pluggedModeCombo.Width = 180;
+        _pluggedModeCombo.Items.AddRange(new object[] { "Eco", "Balanced", "Performance", "Unleashed" });
+        _pluggedModeCombo.SelectedIndexChanged += async (_, __) => await OnPowerModeSelectionChangedAsync();
+
+        _powerSourceLabel.AutoSize = true;
+        _powerSourceLabel.Text = "Power source: checking...";
+        _powerSourceLabel.Margin = new Padding(0, 8, 0, 0);
+
+        panel.Controls.Add(batteryLabel, 0, 0);
+        panel.Controls.Add(_batteryModeCombo, 1, 0);
+        panel.Controls.Add(pluggedLabel, 0, 1);
+        panel.Controls.Add(_pluggedModeCombo, 1, 1);
+        panel.Controls.Add(_powerSourceLabel, 0, 2);
+        panel.SetColumnSpan(_powerSourceLabel, 2);
+
+        powerGroup.Controls.Add(panel);
+        return powerGroup;
+    }
+
+    private GroupBox BuildFanTempGroup()
+    {
+        GroupBox tempGroup = new GroupBox
+        {
+            Text = "Temperature Stats",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            Padding = new Padding(12),
+            Margin = new Padding(0, 0, 0, 12)
+        };
+
+        _fanTempStatsLabel.AutoSize = true;
+        _fanTempStatsLabel.Text =
+            "CPU core avg: <unavailable> | GPU temp: <unavailable> | Chassis temp: <unavailable>" + Environment.NewLine +
+            "Spin-up avg: <unavailable> | Spin-down avg: <unavailable>";
+        _fanTempStatsLabel.MaximumSize = new Size(0, 0);
+
+        tempGroup.Controls.Add(_fanTempStatsLabel);
+        return tempGroup;
+    }
+
     private void AddModeButton(FlowLayoutPanel panel, PerformanceMode mode, string title)
     {
         Button button = new Button
@@ -294,10 +392,17 @@ internal sealed class MainForm : Form
         _controller.StateChanged += ControllerOnStateChanged;
         _controller.LogMessage += ControllerOnLogMessage;
         _controller.Start();
+        LoadPowerModePreferencesIntoUi();
+        _powerModeTimer.Start();
+        _fanTempTimer.Start();
+        UpdateFanTempStats();
+        _ = SyncPowerSourceModeAsync();
     }
 
     private void OnFormClosing(object sender, FormClosingEventArgs e)
     {
+        _powerModeTimer.Stop();
+        _fanTempTimer.Stop();
         _diagnosticsForm?.Close();
         _controller.Dispose();
     }
@@ -317,6 +422,7 @@ internal sealed class MainForm : Form
             " | Fan Min: " + state.CurrentFanMinimumRpm + " RPM" +
             " | Graphics: " + FormatGraphicsMode(state.CurrentGraphicsMode) +
             " | Thermal: " + state.CurrentThermalMode +
+            " | FanCurve: up " + state.FanCurveSpinUpWindowMs + "ms / down " + state.FanCurveSpinDownWindowMs + "ms / pad " + state.FanCurveBreakpointPaddingCelsius + "°C" +
             " | Support: " + string.Join(", ", state.SupportModes ?? Array.Empty<string>());
 
         foreach (KeyValuePair<PerformanceMode, Button> pair in _modeButtons)
@@ -338,6 +444,7 @@ internal sealed class MainForm : Form
         _graphicsLabel.Text = "Graphics: " + FormatGraphicsMode(state.CurrentGraphicsMode);
         UpdateGraphicsButtonState(_umaButton, "UMA", state.GraphicsModeSwitchSupported, state.CurrentGraphicsMode, GraphicsSwitcherMode.UMAMode);
         UpdateGraphicsButtonState(_hybridButton, "Hybrid", state.GraphicsModeSwitchSupported, state.CurrentGraphicsMode, GraphicsSwitcherMode.Hybrid);
+        UpdateFanTempStats();
         if (!state.GraphicsModeSwitchSupported)
         {
             _graphicsModeNoteLabel.Text =
@@ -351,6 +458,8 @@ internal sealed class MainForm : Form
                 " | BIOS bits: 0x" + state.GraphicsModeSwitchBits.ToString("X2") +
                 " | Restart required: " + state.GraphicsNeedsReboot;
         }
+
+        UpdatePowerSourceLabel();
     }
 
     private void ControllerOnLogMessage(object sender, string message)
@@ -364,28 +473,142 @@ internal sealed class MainForm : Form
         _logTextBox.AppendText(message + Environment.NewLine);
     }
 
+    private void LoadPowerModePreferencesIntoUi()
+    {
+        try
+        {
+            _suppressPowerModeUiUpdates = true;
+            SetComboSelection(_batteryModeCombo, FormatPowerModeChoice(_controller.GetBatteryPowerModePreference()));
+            SetComboSelection(_pluggedModeCombo, FormatPowerModeChoice(_controller.GetPluggedInPowerModePreference()));
+        }
+        finally
+        {
+            _suppressPowerModeUiUpdates = false;
+        }
+
+        UpdatePowerSourceLabel();
+    }
+
+    private async Task OnPowerModeSelectionChangedAsync()
+    {
+        if (_suppressPowerModeUiUpdates)
+        {
+            return;
+        }
+
+        if (TryParseSelectedPowerMode(_batteryModeCombo, out PerformanceMode batteryMode))
+        {
+            _controller.SetBatteryPowerModePreference(batteryMode);
+        }
+
+        if (TryParseSelectedPowerMode(_pluggedModeCombo, out PerformanceMode pluggedMode))
+        {
+            _controller.SetPluggedInPowerModePreference(pluggedMode);
+        }
+
+        await SyncPowerSourceModeAsync();
+    }
+
+    private async Task SyncPowerSourceModeAsync()
+    {
+        PowerLineStatus powerLineStatus = SystemInformation.PowerStatus.PowerLineStatus;
+        UpdatePowerSourceLabel();
+
+        if (powerLineStatus == PowerLineStatus.Unknown)
+        {
+            return;
+        }
+
+        bool pluggedIn = powerLineStatus == PowerLineStatus.Online;
+        await _controller.SyncPowerSourcePerformanceModeAsync(pluggedIn);
+    }
+
+    private void UpdatePowerSourceLabel()
+    {
+        PowerLineStatus powerLineStatus = SystemInformation.PowerStatus.PowerLineStatus;
+        string currentSource = powerLineStatus == PowerLineStatus.Online
+            ? "Plugged in"
+            : powerLineStatus == PowerLineStatus.Offline
+                ? "On battery"
+                : "Unknown";
+
+        _powerSourceLabel.Text =
+            "Current power source: " + currentSource +
+            " | Battery target: " + GetComboSelectionText(_batteryModeCombo) +
+            " | Plugged-in target: " + GetComboSelectionText(_pluggedModeCombo);
+    }
+
+    private void UpdateFanTempStats()
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action(UpdateFanTempStats));
+            return;
+        }
+
+        bool hasTemps = _controller.TryGetTemperatureSnapshot(out double cpuCoreAvg, out double gpuTemp, out double chassisTemp);
+        bool hasFanTelemetry = _controller.TryGetFanTelemetry(out double currentTemp, out double spinUpAverageTemp, out double spinDownAverageTemp);
+
+        string topLine =
+            "CPU core avg: " + FormatTempValue(hasTemps ? cpuCoreAvg : double.NaN) +
+            " | GPU temp: " + FormatTempValue(hasTemps ? gpuTemp : double.NaN) +
+            " | Chassis temp: " + FormatTempValue(hasTemps ? chassisTemp : double.NaN);
+
+        string bottomLine =
+            "Spin-up avg: " + FormatTempValue(hasFanTelemetry ? spinUpAverageTemp : double.NaN) +
+            " | Spin-down avg: " + FormatTempValue(hasFanTelemetry ? spinDownAverageTemp : double.NaN);
+
+        _fanTempStatsLabel.Text = topLine + Environment.NewLine + bottomLine;
+    }
+
+    private static string FormatTempValue(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return "<unavailable>";
+        }
+
+        return value.ToString("F1") + "°C";
+    }
+
+    private static void SetComboSelection(ComboBox comboBox, string value)
+    {
+        for (int i = 0; i < comboBox.Items.Count; i++)
+        {
+            if (string.Equals(Convert.ToString(comboBox.Items[i]), value, StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedIndex = i;
+                return;
+            }
+        }
+
+        comboBox.SelectedIndex = comboBox.Items.Count > 0 ? 0 : -1;
+    }
+
+    private static string GetComboSelectionText(ComboBox comboBox)
+    {
+        return comboBox.SelectedItem != null ? Convert.ToString(comboBox.SelectedItem) : "<none>";
+    }
+
+    private static bool TryParseSelectedPowerMode(ComboBox comboBox, out PerformanceMode mode)
+    {
+        string value = Convert.ToString(comboBox.SelectedItem);
+        return TryParseDisplayedPerformanceMode(value, out mode);
+    }
+
+    private static string FormatPowerModeChoice(PerformanceMode mode)
+    {
+        return PerformanceModeFirmwareMap.FormatDisplayName(mode);
+    }
+
     private static IEnumerable<string> BuildSupportedGraphicsModeList(PerformanceControlState state)
     {
-        if (state.GraphicsModeSwitchSupported)
-        {
-            yield return "Hybrid";
-            yield return "UMA";
-        }
+        return GraphicsSupportHelper.BuildSupportedGraphicsModeList(state);
     }
 
     private static string FormatGraphicsMode(string currentGraphicsMode)
     {
-        if (string.Equals(currentGraphicsMode, GraphicsSwitcherMode.UMAMode.ToString(), StringComparison.OrdinalIgnoreCase))
-        {
-            return "UMA";
-        }
-
-        if (string.Equals(currentGraphicsMode, GraphicsSwitcherMode.Hybrid.ToString(), StringComparison.OrdinalIgnoreCase))
-        {
-            return "Hybrid";
-        }
-
-        return currentGraphicsMode;
+        return GraphicsSupportHelper.FormatDisplayName(currentGraphicsMode);
     }
 
     private static string FormatDisplayedPerformanceMode(PerformanceControlState state)
@@ -402,19 +625,7 @@ internal sealed class MainForm : Form
 
     private static bool TryParseDisplayedPerformanceMode(string currentMode, out PerformanceMode mode)
     {
-        if (string.Equals(currentMode, "Balanced", StringComparison.OrdinalIgnoreCase))
-        {
-            mode = PerformanceMode.Default;
-            return true;
-        }
-
-        if (string.Equals(currentMode, "Unleashed", StringComparison.OrdinalIgnoreCase))
-        {
-            mode = PerformanceMode.Extreme;
-            return true;
-        }
-
-        return Enum.TryParse(currentMode, out mode);
+        return PerformanceModeFirmwareMap.TryParseDisplayName(currentMode, out mode);
     }
 
     private static void UpdateGraphicsButtonState(Button button, string title, bool supported, string currentGraphicsMode, GraphicsSwitcherMode representedMode)
@@ -435,6 +646,19 @@ internal sealed class MainForm : Form
 
         _diagnosticsForm = new DiagnosticsForm(() => _controller.BuildDiagnosticsReportAsync());
         _diagnosticsForm.Show(this);
+    }
+
+    private void ShowFanCurveManager()
+    {
+        try
+        {
+            var form = new FanCurveForm(_controller);
+            form.ShowDialog(this);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Failed to open Fan Curve Manager: " + ex.Message, "Fan Curve", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private async Task ApplyGraphicsModeAsync(GraphicsSwitcherMode mode, string label)

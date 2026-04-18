@@ -54,8 +54,10 @@ HP calls these via `ExecuteBiosWmiCommandThruDriver` (visible in OMEN BG logs). 
   - Read 128-byte blob: `command=131080, commandType=45, input=[0,0,0,0]` (out=128)
     - On this machine the first bytes look like temperature/fan-related sensor values, not a mode ID.
     - The leading values appear to be roughly half-resolution temperature/fan readings (for example, raw 25 ≈ 50°C, close to a ~52°C UI reading).
-  - Read 4-byte "temperature-ish" value: `command=131080, commandType=35, input=[0,0,0,0]` (out=4)
-    - HP's `OmenHsaClient.DtGetTemperature()` uses `commandType=35` and reads `return[0]` as the value (that method uses input byte `1`).
+  - Read 4-byte "temperature-ish" value: `command=131080, commandType=35, input=[0,1,0,0]` (out=4)
+    - HP's `OmenHsaClient.DtGetTemperature()` uses `commandType=35` and reads `return[0]` as the value (the observed selector byte is `input[1] = 1`).
+    - Current evidence on this machine: this sensor appears to be chassis temperature, not CPU temperature.
+    - If the UI needs chassis temperature and LibreHardwareMonitor does not expose a chassis/board sensor, use this BIOS/WMI read as the fallback source.
   - Write 128-byte fan minimum/apply blob: `command=131080, commandType=46` (in=128 out=4)
     - We currently treat bytes `0` and `1` as CPU/GPU fan minimum targets in RPM/100.
     - Observed hard minimums: Eco `0`, Balanced `2200`, Performance `2800`, Unleashed `2800`.

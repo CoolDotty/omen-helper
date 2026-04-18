@@ -20,6 +20,12 @@ internal sealed class PerformanceControlState
 
     public int CurrentFanMinimumRpm { get; set; }
 
+    public int FanCurveSpinUpWindowMs { get; set; }
+
+    public int FanCurveSpinDownWindowMs { get; set; }
+
+    public int FanCurveBreakpointPaddingCelsius { get; set; }
+
     public string CurrentGraphicsMode { get; set; }
 
     public bool GraphicsModeSwitchSupported { get; set; }
