@@ -30,6 +30,7 @@ internal sealed class MainForm : Form
     private readonly Timer _powerModeTimer = new Timer();
     private readonly Timer _fanTempTimer = new Timer();
     private bool _suppressPowerModeUiUpdates;
+    private bool _fanTempRefreshInProgress;
 
     public MainForm()
     {
@@ -45,7 +46,7 @@ internal sealed class MainForm : Form
         _powerModeTimer.Interval = 3000;
         _powerModeTimer.Tick += async (_, __) => await SyncPowerSourceModeAsync();
         _fanTempTimer.Interval = 1000;
-        _fanTempTimer.Tick += (_, __) => UpdateFanTempStats();
+        _fanTempTimer.Tick += async (_, __) => await RefreshFanTempStatsAsync();
     }
 
     private void InitializeUi()
@@ -395,7 +396,7 @@ internal sealed class MainForm : Form
         LoadPowerModePreferencesIntoUi();
         _powerModeTimer.Start();
         _fanTempTimer.Start();
-        UpdateFanTempStats();
+        _ = RefreshFanTempStatsAsync();
         _ = SyncPowerSourceModeAsync();
     }
 
@@ -422,7 +423,7 @@ internal sealed class MainForm : Form
             " | Fan Min: " + state.CurrentFanMinimumRpm + " RPM" +
             " | Graphics: " + FormatGraphicsMode(state.CurrentGraphicsMode) +
             " | Thermal: " + state.CurrentThermalMode +
-            " | FanCurve: up " + state.FanCurveSpinUpWindowMs + "ms / down " + state.FanCurveSpinDownWindowMs + "ms / pad " + state.FanCurveBreakpointPaddingCelsius + "°C" +
+            " | FanCurve: up " + state.FanCurveSpinUpWindowSeconds + "s / down " + state.FanCurveSpinDownWindowSeconds + "s" +
             " | Support: " + string.Join(", ", state.SupportModes ?? Array.Empty<string>());
 
         foreach (KeyValuePair<PerformanceMode, Button> pair in _modeButtons)
@@ -444,7 +445,7 @@ internal sealed class MainForm : Form
         _graphicsLabel.Text = "Graphics: " + FormatGraphicsMode(state.CurrentGraphicsMode);
         UpdateGraphicsButtonState(_umaButton, "UMA", state.GraphicsModeSwitchSupported, state.CurrentGraphicsMode, GraphicsSwitcherMode.UMAMode);
         UpdateGraphicsButtonState(_hybridButton, "Hybrid", state.GraphicsModeSwitchSupported, state.CurrentGraphicsMode, GraphicsSwitcherMode.Hybrid);
-        UpdateFanTempStats();
+        _ = RefreshFanTempStatsAsync();
         if (!state.GraphicsModeSwitchSupported)
         {
             _graphicsModeNoteLabel.Text =
@@ -538,27 +539,59 @@ internal sealed class MainForm : Form
             " | Plugged-in target: " + GetComboSelectionText(_pluggedModeCombo);
     }
 
-    private void UpdateFanTempStats()
+    private async Task RefreshFanTempStatsAsync()
     {
-        if (InvokeRequired)
+        if (IsDisposed || _fanTempRefreshInProgress)
         {
-            BeginInvoke(new Action(UpdateFanTempStats));
             return;
         }
 
-        bool hasTemps = _controller.TryGetTemperatureSnapshot(out double cpuCoreAvg, out double gpuTemp, out double chassisTemp);
-        bool hasFanTelemetry = _controller.TryGetFanTelemetry(out double currentTemp, out double spinUpAverageTemp, out double spinDownAverageTemp);
+        _fanTempRefreshInProgress = true;
+        try
+        {
+            bool hasTemps = false;
+            bool hasFanTelemetry = false;
+            double cpuCoreAvg = double.NaN;
+            double gpuTemp = double.NaN;
+            double chassisTemp = double.NaN;
+            double spinUpAverageTemp = double.NaN;
+            double spinDownAverageTemp = double.NaN;
 
-        string topLine =
-            "CPU core avg: " + FormatTempValue(hasTemps ? cpuCoreAvg : double.NaN) +
-            " | GPU temp: " + FormatTempValue(hasTemps ? gpuTemp : double.NaN) +
-            " | Chassis temp: " + FormatTempValue(hasTemps ? chassisTemp : double.NaN);
+            await Task.Run(() =>
+            {
+                hasTemps = _controller.TryGetTemperatureSnapshot(out cpuCoreAvg, out gpuTemp, out chassisTemp);
+                hasFanTelemetry = _controller.TryGetFanTelemetry(out _, out spinUpAverageTemp, out spinDownAverageTemp);
+            }).ConfigureAwait(true);
 
-        string bottomLine =
-            "Spin-up avg: " + FormatTempValue(hasFanTelemetry ? spinUpAverageTemp : double.NaN) +
-            " | Spin-down avg: " + FormatTempValue(hasFanTelemetry ? spinDownAverageTemp : double.NaN);
+            if (IsDisposed)
+            {
+                return;
+            }
 
-        _fanTempStatsLabel.Text = topLine + Environment.NewLine + bottomLine;
+            string topLine =
+                "CPU core avg: " + FormatTempValue(hasTemps ? cpuCoreAvg : double.NaN) +
+                " | GPU temp: " + FormatTempValue(hasTemps ? gpuTemp : double.NaN) +
+                " | Chassis temp: " + FormatTempValue(hasTemps ? chassisTemp : double.NaN);
+
+            string bottomLine =
+                "Spin-up avg: " + FormatTempValue(hasFanTelemetry ? spinUpAverageTemp : double.NaN) +
+                " | Spin-down avg: " + FormatTempValue(hasFanTelemetry ? spinDownAverageTemp : double.NaN);
+
+            _fanTempStatsLabel.Text = topLine + Environment.NewLine + bottomLine;
+        }
+        catch
+        {
+            if (!IsDisposed)
+            {
+                _fanTempStatsLabel.Text =
+                    "CPU core avg: <unavailable> | GPU temp: <unavailable> | Chassis temp: <unavailable>" + Environment.NewLine +
+                    "Spin-up avg: <unavailable> | Spin-down avg: <unavailable>";
+            }
+        }
+        finally
+        {
+            _fanTempRefreshInProgress = false;
+        }
     }
 
     private static string FormatTempValue(double value)

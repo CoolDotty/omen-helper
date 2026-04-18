@@ -37,3 +37,4 @@ packages/
 
 # Let people config themselves. Keep skills in project root.
 .codex
+.claude

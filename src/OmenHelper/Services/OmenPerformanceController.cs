@@ -85,6 +85,8 @@ internal sealed class OmenPerformanceController : IDisposable
 
     public event EventHandler<string> LogMessage;
 
+    public event Action<int> FanMinimumBlobWritten;
+
     public OmenPerformanceController()
     {
         _sessionId = Process.GetCurrentProcess().SessionId;
@@ -183,6 +185,10 @@ internal sealed class OmenPerformanceController : IDisposable
                 {
                     _fanCurveController = new FanCurveController(_omenBiosClient);
                     _fanCurveController.LogMessage += s => Log(s);
+                    _fanCurveController.FanMinimumBlobWritten += rpm =>
+                    {
+                        try { FanMinimumBlobWritten?.Invoke(rpm); } catch { }
+                    };
                     _fanCurveController.SetEnabled(true); // first run: enable conservative default curve
                     Log("Fan curve controller initialized and enabled.");
                 }
@@ -484,9 +490,8 @@ internal sealed class OmenPerformanceController : IDisposable
             CurrentThermalMode = _currentThermalMode.ToString(),
             CurrentLegacyFanMode = _currentLegacyFanMode.ToString(),
             CurrentFanMinimumRpm = GetFanMinimumRpmForMode(_currentMode),
-            FanCurveSpinUpWindowMs = _fanCurveController != null ? _fanCurveController.GetSpinUpWindowMs() : 5000,
-            FanCurveSpinDownWindowMs = _fanCurveController != null ? _fanCurveController.GetSpinDownWindowMs() : 15000,
-            FanCurveBreakpointPaddingCelsius = _fanCurveController != null ? _fanCurveController.GetBreakpointPaddingCelsius() : 5,
+            FanCurveSpinUpWindowSeconds = _fanCurveController != null ? _fanCurveController.GetSpinUpWindowSeconds() : 5m,
+            FanCurveSpinDownWindowSeconds = _fanCurveController != null ? _fanCurveController.GetSpinDownWindowSeconds() : 30m,
             CurrentGraphicsMode = _currentGraphicsMode.ToString(),
             GraphicsModeSwitchSupported = _graphicsModeSwitchSupported,
             GraphicsSupportsUma = _graphicsSupportsUma,
@@ -895,12 +900,17 @@ internal sealed class OmenPerformanceController : IDisposable
 
     private byte[] BuildFanMinimumBlobForCurrentMode()
     {
-        int minimumRpm = GetFanMinimumRpmForMode(_currentMode);
+        int minimumRpm = RoundToStep100(GetFanMinimumRpmForMode(_currentMode));
         byte minimumValue = (byte)Math.Max(0, Math.Min(255, minimumRpm / 100));
         byte[] payload = new byte[128];
         payload[0] = minimumValue;
         payload[1] = minimumValue;
         return payload;
+    }
+
+    private static int RoundToStep100(int value)
+    {
+        return (int)(Math.Round(value / 100.0) * 100.0);
     }
 
     private static int GetFanMinimumRpmForMode(PerformanceMode mode)
@@ -1167,34 +1177,24 @@ internal sealed class OmenPerformanceController : IDisposable
         return _fanCurveController?.GetSettingsPath();
     }
 
-    public int GetFanCurveSpinUpWindowMs()
+    public decimal GetFanCurveSpinUpWindowSeconds()
     {
-        return _fanCurveController != null ? _fanCurveController.GetSpinUpWindowMs() : 5000;
+        return _fanCurveController != null ? _fanCurveController.GetSpinUpWindowSeconds() : 5m;
     }
 
-    public int GetFanCurveSpinDownWindowMs()
+    public decimal GetFanCurveSpinDownWindowSeconds()
     {
-        return _fanCurveController != null ? _fanCurveController.GetSpinDownWindowMs() : 15000;
+        return _fanCurveController != null ? _fanCurveController.GetSpinDownWindowSeconds() : 30m;
     }
 
-    public int GetFanCurveBreakpointPaddingCelsius()
+    public void SetFanCurveSpinUpWindowSeconds(decimal value)
     {
-        return _fanCurveController != null ? _fanCurveController.GetBreakpointPaddingCelsius() : 5;
+        _fanCurveController?.SetSpinUpWindowSeconds(value);
     }
 
-    public void SetFanCurveSpinUpWindowMs(int value)
+    public void SetFanCurveSpinDownWindowSeconds(decimal value)
     {
-        _fanCurveController?.SetSpinUpWindowMs(value);
-    }
-
-    public void SetFanCurveSpinDownWindowMs(int value)
-    {
-        _fanCurveController?.SetSpinDownWindowMs(value);
-    }
-
-    public void SetFanCurveBreakpointPaddingCelsius(int value)
-    {
-        _fanCurveController?.SetBreakpointPaddingCelsius(value);
+        _fanCurveController?.SetSpinDownWindowSeconds(value);
     }
 
     public bool TryGetFanTelemetry(out double currentTemp, out double spinUpAverageTemp, out double spinDownAverageTemp)
@@ -1207,6 +1207,17 @@ internal sealed class OmenPerformanceController : IDisposable
         currentTemp = double.NaN;
         spinUpAverageTemp = double.NaN;
         spinDownAverageTemp = double.NaN;
+        return false;
+    }
+
+    public bool TryGetFanCurveTargetRpm(double temp, out int rpm)
+    {
+        if (_fanCurveController != null)
+        {
+            return _fanCurveController.TryGetTargetRpm(temp, out rpm);
+        }
+
+        rpm = 0;
         return false;
     }
 

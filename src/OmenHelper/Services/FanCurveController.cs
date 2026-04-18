@@ -16,7 +16,6 @@ namespace OmenHelper.Services
 
         public int SpinDownWindowMs { get; set; }
 
-        public int BreakpointPaddingCelsius { get; set; }
 
         public int Evaluate(double temp)
         {
@@ -28,10 +27,10 @@ namespace OmenHelper.Services
             {
                 var a = Points[i];
                 var b = Points[i + 1];
-                if (temp >= a.Temp && temp <= b.Temp)
+                double midpoint = (a.Temp + b.Temp) / 2.0;
+                if (temp < midpoint)
                 {
-                    double frac = (temp - a.Temp) / (b.Temp - a.Temp);
-                    return (int)Math.Round(a.Rpm + frac * (b.Rpm - a.Rpm));
+                    return a.Rpm;
                 }
             }
             return Points[Points.Count - 1].Rpm;
@@ -61,15 +60,13 @@ namespace OmenHelper.Services
         private readonly int _sampleIntervalMs = 1000;
         private readonly double _emaAlpha = 0.2;
         private readonly int _defaultSpinUpWindowMs = 5000;
-        private readonly int _defaultSpinDownWindowMs = 15000;
-        private readonly int _defaultBreakpointPaddingCelsius = 5;
+        private readonly int _defaultSpinDownWindowMs = 30000;
         private readonly int _hysteresisRpm = 100;
         private readonly int _minWriteIntervalMs = 5000;
         private readonly int _forceWriteThresholdRpm = 400;
 
         private int _spinUpWindowMs;
         private int _spinDownWindowMs;
-        private int _breakpointPaddingCelsius;
 
         private readonly List<TemperatureSample> _samples = new List<TemperatureSample>();
         private double _smoothedTemp = double.NaN;
@@ -87,7 +84,6 @@ namespace OmenHelper.Services
             _settingsPath = settingsPath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OmenHelper", "fan-curve.json");
             _spinUpWindowMs = _defaultSpinUpWindowMs;
             _spinDownWindowMs = _defaultSpinDownWindowMs;
-            _breakpointPaddingCelsius = _defaultBreakpointPaddingCelsius;
             LoadOrCreateDefaultCurve();
         }
 
@@ -110,7 +106,7 @@ namespace OmenHelper.Services
                     return false;
                 }
 
-                rpm = EvaluateWithBreakpointPaddingUnsafe(temp);
+                rpm = _curve.Evaluate(temp);
                 return true;
             }
         }
@@ -151,7 +147,6 @@ namespace OmenHelper.Services
                 {
                     SpinUpWindowMs = _spinUpWindowMs,
                     SpinDownWindowMs = _spinDownWindowMs,
-                    BreakpointPaddingCelsius = _breakpointPaddingCelsius
                 };
                 _curve.Points.AddRange(normalized);
                 SaveCurveUnsafe();
@@ -169,59 +164,48 @@ namespace OmenHelper.Services
 
         public string GetSettingsPath() => _settingsPath;
 
-        public int GetSpinUpWindowMs()
+        public decimal GetSpinUpWindowSeconds()
         {
             lock (_curveLock)
             {
-                return _curve != null ? _curve.SpinUpWindowMs : _spinUpWindowMs;
+                return MsToSeconds(_curve != null ? _curve.SpinUpWindowMs : _spinUpWindowMs);
             }
         }
 
-        public int GetSpinDownWindowMs()
+        public decimal GetSpinDownWindowSeconds()
         {
             lock (_curveLock)
             {
-                return _curve != null ? _curve.SpinDownWindowMs : _spinDownWindowMs;
+                return MsToSeconds(_curve != null ? _curve.SpinDownWindowMs : _spinDownWindowMs);
             }
         }
 
-        public int GetBreakpointPaddingCelsius()
+        public void SetSpinUpWindowSeconds(decimal value)
         {
             lock (_curveLock)
             {
-                return _curve != null ? _curve.BreakpointPaddingCelsius : _breakpointPaddingCelsius;
-            }
-        }
-
-        public void SetSpinUpWindowMs(int value)
-        {
-            lock (_curveLock)
-            {
-                _spinUpWindowMs = ClampInt(value, 1000, 60000);
+                _spinUpWindowMs = ClampInt(SecondsToMs(value), 1000, 60000);
                 if (_curve != null) _curve.SpinUpWindowMs = _spinUpWindowMs;
+                if (_spinDownWindowMs < _spinUpWindowMs)
+                {
+                    _spinDownWindowMs = _spinUpWindowMs;
+                    if (_curve != null) _curve.SpinDownWindowMs = _spinDownWindowMs;
+                }
                 SaveCurveUnsafe();
             }
         }
 
-        public void SetSpinDownWindowMs(int value)
+        public void SetSpinDownWindowSeconds(decimal value)
         {
             lock (_curveLock)
             {
-                _spinDownWindowMs = ClampInt(value, _spinUpWindowMs, 60000);
+                _spinDownWindowMs = ClampInt(SecondsToMs(value), _spinUpWindowMs, 60000);
                 if (_curve != null) _curve.SpinDownWindowMs = _spinDownWindowMs;
                 SaveCurveUnsafe();
             }
         }
 
-        public void SetBreakpointPaddingCelsius(int value)
-        {
-            lock (_curveLock)
-            {
-                _breakpointPaddingCelsius = ClampInt(value, 0, 15);
-                if (_curve != null) _curve.BreakpointPaddingCelsius = _breakpointPaddingCelsius;
-                SaveCurveUnsafe();
-            }
-        }
+        public event Action<int> FanMinimumBlobWritten;
 
         private void LoadOrCreateDefaultCurve()
         {
@@ -237,7 +221,6 @@ namespace OmenHelper.Services
                         string[] lines = File.ReadAllLines(_settingsPath, Encoding.UTF8);
                         int spinUpWindowMs = _defaultSpinUpWindowMs;
                         int spinDownWindowMs = _defaultSpinDownWindowMs;
-                        int breakpointPaddingCelsius = _defaultBreakpointPaddingCelsius;
                         var points = new List<(int, int)>();
                         foreach (string line in lines)
                         {
@@ -246,7 +229,7 @@ namespace OmenHelper.Services
 
                             if (TryParseSettingLine(l, out string key, out string value))
                             {
-                                ApplySettingValue(key, value, ref spinUpWindowMs, ref spinDownWindowMs, ref breakpointPaddingCelsius);
+                                ApplySettingValue(key, value, ref spinUpWindowMs, ref spinDownWindowMs);
                                 continue;
                             }
 
@@ -264,7 +247,6 @@ namespace OmenHelper.Services
                             _curve.Points.AddRange(normalized);
                             _spinUpWindowMs = ClampInt(spinUpWindowMs, 1000, 60000);
                             _spinDownWindowMs = ClampInt(spinDownWindowMs, _spinUpWindowMs, 60000);
-                            _breakpointPaddingCelsius = ClampInt(breakpointPaddingCelsius, 0, 15);
                         }
                         else
                         {
@@ -295,7 +277,6 @@ namespace OmenHelper.Services
             _curve = new FanCurve();
             _curve.SpinUpWindowMs = _defaultSpinUpWindowMs;
             _curve.SpinDownWindowMs = _defaultSpinDownWindowMs;
-            _curve.BreakpointPaddingCelsius = _defaultBreakpointPaddingCelsius;
             // conservative example: ramp from 40C -> 2000rpm up to 85C -> 5200rpm
             _curve.Points.Add((40, 2000));
             _curve.Points.Add((55, 2800));
@@ -313,9 +294,8 @@ namespace OmenHelper.Services
                 }
 
                 var sb = new StringBuilder();
-                sb.AppendLine("#spinUpWindowMs=" + _spinUpWindowMs.ToString(CultureInfo.InvariantCulture));
-                sb.AppendLine("#spinDownWindowMs=" + _spinDownWindowMs.ToString(CultureInfo.InvariantCulture));
-                sb.AppendLine("#breakpointPaddingCelsius=" + _breakpointPaddingCelsius.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("#spinUpWindowSeconds=" + MsToSeconds(_spinUpWindowMs).ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("#spinDownWindowSeconds=" + MsToSeconds(_spinDownWindowMs).ToString(CultureInfo.InvariantCulture));
                 foreach (var p in _curve.Points)
                 {
                     sb.AppendLine(p.Temp.ToString(CultureInfo.InvariantCulture) + "," + p.Rpm.ToString(CultureInfo.InvariantCulture));
@@ -333,7 +313,7 @@ namespace OmenHelper.Services
             DateTime now = DateTime.UtcNow;
             _samples.Add(new TemperatureSample { TimestampUtc = now, Temperature = temp });
 
-            DateTime cutoff = now.AddSeconds(-30);
+            DateTime cutoff = now.AddSeconds(-60);
             int removeCount = 0;
             while (removeCount < _samples.Count && _samples[removeCount].TimestampUtc < cutoff)
             {
@@ -359,8 +339,8 @@ namespace OmenHelper.Services
                 double spinUpAverage = AverageTemperature(_spinUpWindowMs);
                 double spinDownAverage = AverageTemperature(_spinDownWindowMs);
 
-                int upTarget = EvaluateWithBreakpointPaddingUnsafe(spinUpAverage);
-                int downTarget = EvaluateWithBreakpointPaddingUnsafe(spinDownAverage);
+                int upTarget = NormalizeRpmForBios(_curve.Evaluate(spinUpAverage));
+                int downTarget = NormalizeRpmForBios(_curve.Evaluate(spinDownAverage));
 
                 if (_lastWrittenRpm < 0)
                 {
@@ -414,37 +394,6 @@ namespace OmenHelper.Services
             }
 
             return total / count;
-        }
-
-        private int EvaluateWithBreakpointPaddingUnsafe(double temp)
-        {
-            if (_curve == null || _curve.Points == null || _curve.Points.Count == 0)
-            {
-                return 0;
-            }
-
-            int padding = Math.Max(0, _breakpointPaddingCelsius);
-            if (padding > 0)
-            {
-                int nearestIndex = -1;
-                int nearestDistance = int.MaxValue;
-                for (int i = 0; i < _curve.Points.Count; i++)
-                {
-                    int distance = (int)Math.Round(Math.Abs(temp - _curve.Points[i].Temp));
-                    if (distance <= padding && distance < nearestDistance)
-                    {
-                        nearestDistance = distance;
-                        nearestIndex = i;
-                    }
-                }
-
-                if (nearestIndex >= 0)
-                {
-                    return _curve.Points[nearestIndex].Rpm;
-                }
-            }
-
-            return _curve.Evaluate(temp);
         }
 
         public void SetEnabled(bool enabled)
@@ -590,7 +539,8 @@ namespace OmenHelper.Services
                         ? read.ReturnData
                         : new byte[128];
 
-                    byte cpuByte = RpmToByte(cpuRpm);
+                    int normalizedRpm = NormalizeRpmForBios(cpuRpm);
+                    byte cpuByte = RpmToByte(normalizedRpm);
                     byte gpuByte = cpuByte; // use same for GPU by default
                     blob[0] = cpuByte;
                     blob[1] = gpuByte;
@@ -602,9 +552,10 @@ namespace OmenHelper.Services
                     bool ok = write.ExecuteResult && write.ReturnCode == 0;
                     if (ok)
                     {
-                        _lastWrittenRpm = cpuRpm;
+                        _lastWrittenRpm = normalizedRpm;
                         _lastWriteTime = DateTime.UtcNow;
-                        Log($"Wrote fan blob: CPU {cpuRpm} rpm -> b{cpuByte}");
+                        try { FanMinimumBlobWritten?.Invoke(normalizedRpm); } catch { }
+                        Log($"Wrote fan blob: CPU {normalizedRpm} rpm -> b{cpuByte}");
                     }
                     else
                     {
@@ -620,12 +571,31 @@ namespace OmenHelper.Services
             await Task.CompletedTask;
         }
 
+        private static int NormalizeRpmForBios(int rpm)
+        {
+            return RoundToStep100(rpm);
+        }
+
         private static byte RpmToByte(int rpm)
         {
             int v = (int)Math.Round(rpm / 100.0);
             if (v < 0) v = 0;
             if (v > 255) v = 255;
             return (byte)v;
+        }
+
+        private static decimal MsToSeconds(int milliseconds)
+        {
+            return milliseconds / 1000m;
+        }
+
+        private static int SecondsToMs(decimal seconds)
+        {
+            decimal clampedSeconds = seconds < 0m ? 0m : seconds;
+            decimal ms = decimal.Round(clampedSeconds * 1000m, 0, MidpointRounding.AwayFromZero);
+            if (ms < int.MinValue) return int.MinValue;
+            if (ms > int.MaxValue) return int.MaxValue;
+            return (int)ms;
         }
 
         private static int ClampInt(int value, int min, int max)
@@ -667,24 +637,33 @@ namespace OmenHelper.Services
             return key.Length > 0;
         }
 
-        private static void ApplySettingValue(string key, string value, ref int spinUpWindowMs, ref int spinDownWindowMs, ref int breakpointPaddingCelsius)
+        private static void ApplySettingValue(string key, string value, ref int spinUpWindowMs, ref int spinDownWindowMs)
         {
-            if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+            if (string.Equals(key, "spinUpWindowSeconds", StringComparison.OrdinalIgnoreCase))
             {
+                if (decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal parsedSeconds))
+                {
+                    spinUpWindowMs = SecondsToMs(parsedSeconds);
+                }
                 return;
             }
 
-            if (string.Equals(key, "spinUpWindowMs", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(key, "spinDownWindowSeconds", StringComparison.OrdinalIgnoreCase))
             {
-                spinUpWindowMs = parsed;
+                if (decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal parsedSeconds))
+                {
+                    spinDownWindowMs = SecondsToMs(parsedSeconds);
+                }
+                return;
             }
-            else if (string.Equals(key, "spinDownWindowMs", StringComparison.OrdinalIgnoreCase))
+
+            if (string.Equals(key, "spinUpWindowMs", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedUpMs))
             {
-                spinDownWindowMs = parsed;
+                spinUpWindowMs = parsedUpMs;
             }
-            else if (string.Equals(key, "breakpointPaddingCelsius", StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(key, "spinDownWindowMs", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedDownMs))
             {
-                breakpointPaddingCelsius = parsed;
+                spinDownWindowMs = parsedDownMs;
             }
         }
 

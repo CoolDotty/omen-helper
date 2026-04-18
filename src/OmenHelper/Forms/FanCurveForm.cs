@@ -16,7 +16,6 @@ namespace OmenHelper
         private readonly CheckBox _enableCheck;
         private readonly NumericUpDown _spinUpWindowUpDown;
         private readonly NumericUpDown _spinDownWindowUpDown;
-        private readonly NumericUpDown _breakpointPaddingUpDown;
         private readonly Button _addButton;
         private readonly Button _removeButton;
         private readonly Button _saveButton;
@@ -41,7 +40,7 @@ namespace OmenHelper
                 Dock = DockStyle.Top,
                 AutoSize = true,
                 Padding = new Padding(0, 0, 0, 8),
-                Text = "Drag points on the graph to shape the fan curve. Double-click empty space to add a point. Press Delete to remove the selected point."
+                Text = "Drag points on the graph to shape the stepped fan curve. Each point holds until halfway to the next point. Double-click empty space to add a point. Press Delete to remove the selected point."
             };
 
             _graph = new FanCurveGraphControl
@@ -51,6 +50,7 @@ namespace OmenHelper
                 Margin = new Padding(0, 0, 0, 10)
             };
             _graph.PointsChanged += GraphOnPointsChanged;
+            _controller.FanMinimumBlobWritten += ControllerOnFanMinimumBlobWritten;
 
             _grid = new DataGridView
             {
@@ -89,28 +89,22 @@ namespace OmenHelper
                 _controller.SetFanCurveEnabled(_enableCheck.Checked);
             };
 
-            _spinUpWindowUpDown = CreateTimingUpDown(1000, 60000, 5000);
+            _spinUpWindowUpDown = CreateTimingUpDown(1.0m, 60.0m, 5.0m);
             _spinUpWindowUpDown.ValueChanged += (_, __) =>
             {
                 if (_suppressUiUpdates) return;
-                _controller.SetFanCurveSpinUpWindowMs((int)_spinUpWindowUpDown.Value);
+                _controller.SetFanCurveSpinUpWindowSeconds(_spinUpWindowUpDown.Value);
                 SyncTimingControls();
             };
 
-            _spinDownWindowUpDown = CreateTimingUpDown(1000, 60000, 15000);
+            _spinDownWindowUpDown = CreateTimingUpDown(1.0m, 60.0m, 30.0m);
             _spinDownWindowUpDown.ValueChanged += (_, __) =>
             {
                 if (_suppressUiUpdates) return;
-                _controller.SetFanCurveSpinDownWindowMs((int)_spinDownWindowUpDown.Value);
+                _controller.SetFanCurveSpinDownWindowSeconds(_spinDownWindowUpDown.Value);
                 SyncTimingControls();
             };
 
-            _breakpointPaddingUpDown = CreatePaddingUpDown(0, 15, 5);
-            _breakpointPaddingUpDown.ValueChanged += (_, __) =>
-            {
-                if (_suppressUiUpdates) return;
-                _controller.SetFanCurveBreakpointPaddingCelsius((int)_breakpointPaddingUpDown.Value);
-            };
 
             _addButton = new Button { Text = "Add Point", AutoSize = true };
             _removeButton = new Button { Text = "Remove Selected", AutoSize = true };
@@ -135,12 +129,10 @@ namespace OmenHelper
             controls.Controls.Add(_saveButton);
             controls.Controls.Add(_resetButton);
             controls.Controls.Add(_enableCheck);
-            controls.Controls.Add(new Label { Text = " Spin up ms:", AutoSize = true, Padding = new Padding(12, 6, 4, 0) });
+            controls.Controls.Add(new Label { Text = " Spin up (s):", AutoSize = true, Padding = new Padding(12, 6, 4, 0) });
             controls.Controls.Add(_spinUpWindowUpDown);
-            controls.Controls.Add(new Label { Text = " Spin down ms:", AutoSize = true, Padding = new Padding(12, 6, 4, 0) });
+            controls.Controls.Add(new Label { Text = " Spin down (s):", AutoSize = true, Padding = new Padding(12, 6, 4, 0) });
             controls.Controls.Add(_spinDownWindowUpDown);
-            controls.Controls.Add(new Label { Text = " Padding °C:", AutoSize = true, Padding = new Padding(12, 6, 4, 0) });
-            controls.Controls.Add(_breakpointPaddingUpDown);
 
             GroupBox gridGroup = new GroupBox
             {
@@ -182,6 +174,7 @@ namespace OmenHelper
             {
                 _telemetryTimer.Stop();
                 _graph.PointsChanged -= GraphOnPointsChanged;
+                _controller.FanMinimumBlobWritten -= ControllerOnFanMinimumBlobWritten;
             };
         }
 
@@ -214,9 +207,8 @@ namespace OmenHelper
 
                 ApplyPointsToUi(points);
                 _enableCheck.Checked = _controller.IsFanCurveEnabled();
-                _spinUpWindowUpDown.Value = ClampDecimal(_controller.GetFanCurveSpinUpWindowMs(), _spinUpWindowUpDown.Minimum, _spinUpWindowUpDown.Maximum);
-                _spinDownWindowUpDown.Value = ClampDecimal(_controller.GetFanCurveSpinDownWindowMs(), _spinDownWindowUpDown.Minimum, _spinDownWindowUpDown.Maximum);
-                _breakpointPaddingUpDown.Value = ClampDecimal(_controller.GetFanCurveBreakpointPaddingCelsius(), _breakpointPaddingUpDown.Minimum, _breakpointPaddingUpDown.Maximum);
+                _spinUpWindowUpDown.Value = ClampDecimal(_controller.GetFanCurveSpinUpWindowSeconds(), _spinUpWindowUpDown.Minimum, _spinUpWindowUpDown.Maximum);
+                _spinDownWindowUpDown.Value = ClampDecimal(_controller.GetFanCurveSpinDownWindowSeconds(), _spinDownWindowUpDown.Minimum, _spinDownWindowUpDown.Maximum);
                 SyncTimingControls();
             }
             catch (Exception ex)
@@ -237,34 +229,23 @@ namespace OmenHelper
             }
         }
 
-        private static decimal ClampDecimal(int value, decimal min, decimal max)
+        private static decimal ClampDecimal(decimal value, decimal min, decimal max)
         {
-            if (value < (int)min) return min;
-            if (value > (int)max) return max;
+            if (value < min) return min;
+            if (value > max) return max;
             return value;
         }
 
-        private static NumericUpDown CreateTimingUpDown(int min, int max, int value)
+        private static NumericUpDown CreateTimingUpDown(decimal min, decimal max, decimal value)
         {
             return new NumericUpDown
             {
                 Minimum = min,
                 Maximum = max,
-                Increment = 100,
-                ThousandsSeparator = true,
+                DecimalPlaces = 1,
+                Increment = 0.1m,
+                ThousandsSeparator = false,
                 Width = 92,
-                Value = value
-            };
-        }
-
-        private static NumericUpDown CreatePaddingUpDown(int min, int max, int value)
-        {
-            return new NumericUpDown
-            {
-                Minimum = min,
-                Maximum = max,
-                Increment = 1,
-                Width = 60,
                 Value = value
             };
         }
@@ -406,15 +387,46 @@ namespace OmenHelper
 
             if (_controller.TryGetFanTelemetry(out double currentTemp, out double spinUpAverageTemp, out double spinDownAverageTemp))
             {
+                int? currentRpm = null;
+                if (_controller.TryGetFanCurveTargetRpm(currentTemp, out int rpm))
+                {
+                    currentRpm = rpm;
+                }
+
                 _graph.SetTelemetry(
                     currentTemp,
                     spinUpAverageTemp,
                     spinDownAverageTemp,
-                    _controller.GetFanCurveBreakpointPaddingCelsius());
+                    currentRpm);
             }
             else
             {
-                _graph.SetTelemetry(null, null, null, _controller.GetFanCurveBreakpointPaddingCelsius());
+                _graph.SetTelemetry(null, null, null, null);
+            }
+        }
+
+        private void ControllerOnFanMinimumBlobWritten(int rpm)
+        {
+            if (IsDisposed)
+            {
+                return;
+            }
+
+            void Update()
+            {
+                if (!IsDisposed)
+                {
+                    _graph.SetWrittenRpm(rpm);
+                }
+            }
+
+            if (InvokeRequired)
+            {
+                BeginInvoke((Action)Update);
+            }
+            else
+            {
+                Update();
             }
         }
 
@@ -494,10 +506,13 @@ namespace OmenHelper
             private double? _targetCurrentTemp;
             private double? _targetSpinUpTemp;
             private double? _targetSpinDownTemp;
+            private int? _targetCurrentRpm;
+            private int? _targetWrittenRpm;
             private double? _displayCurrentTemp;
             private double? _displaySpinUpTemp;
             private double? _displaySpinDownTemp;
-            private int _breakpointPaddingCelsius;
+            private int? _displayCurrentRpm;
+            private int? _displayWrittenRpm;
 
             public event EventHandler PointsChanged;
 
@@ -540,19 +555,43 @@ namespace OmenHelper
                 return list;
             }
 
-            public void SetTelemetry(double? currentTemp, double? spinUpAverageTemp, double? spinDownAverageTemp, int breakpointPaddingCelsius)
+            public void SetTelemetry(double? currentTemp, double? spinUpAverageTemp, double? spinDownAverageTemp, int? currentRpm)
             {
                 _targetCurrentTemp = currentTemp;
                 _targetSpinUpTemp = spinUpAverageTemp;
                 _targetSpinDownTemp = spinDownAverageTemp;
-                _breakpointPaddingCelsius = Math.Max(0, breakpointPaddingCelsius);
+                _targetCurrentRpm = currentRpm;
 
-                if (!_targetCurrentTemp.HasValue && !_targetSpinUpTemp.HasValue && !_targetSpinDownTemp.HasValue)
+                if (!_targetCurrentTemp.HasValue && !_targetSpinUpTemp.HasValue && !_targetSpinDownTemp.HasValue && !_targetCurrentRpm.HasValue && !_targetWrittenRpm.HasValue)
                 {
                     _displayCurrentTemp = null;
                     _displaySpinUpTemp = null;
                     _displaySpinDownTemp = null;
+                    _displayCurrentRpm = null;
+                    _displayWrittenRpm = null;
                     _animationTimer.Stop();
+                    Invalidate();
+                    return;
+                }
+
+                if (!_animationTimer.Enabled)
+                {
+                    _animationTimer.Start();
+                }
+
+                Invalidate();
+            }
+
+            public void SetWrittenRpm(int? rpm)
+            {
+                _targetWrittenRpm = rpm;
+                if (!rpm.HasValue)
+                {
+                    _displayWrittenRpm = null;
+                    if (!_targetCurrentTemp.HasValue && !_targetSpinUpTemp.HasValue && !_targetSpinDownTemp.HasValue && !_targetCurrentRpm.HasValue)
+                    {
+                        _animationTimer.Stop();
+                    }
                     Invalidate();
                     return;
                 }
@@ -579,12 +618,12 @@ namespace OmenHelper
                 using (var selectedBrush = new SolidBrush(Color.OrangeRed))
                 using (var textBrush = new SolidBrush(ForeColor))
                 using (var gridPen = new Pen(Color.Gainsboro, 1))
-                using (var paddingPen = new Pen(Color.FromArgb(150, 150, 150), 2f))
-                using (var paddingBrush = new SolidBrush(Color.FromArgb(150, 150, 150)))
                 using (var currentPen = new Pen(Color.LimeGreen, 2f))
+                using (var writtenPen = new Pen(Color.FromArgb(140, 140, 140, 140), 1.5f))
                 using (var spinUpPen = new Pen(Color.Red, 2f))
                 using (var spinDownPen = new Pen(Color.Blue, 2f))
                 using (var currentBrush = new SolidBrush(Color.LimeGreen))
+                using (var writtenBrush = new SolidBrush(Color.FromArgb(140, 140, 140, 140)))
                 using (var spinUpBrush = new SolidBrush(Color.Red))
                 using (var spinDownBrush = new SolidBrush(Color.Blue))
                 {
@@ -604,20 +643,16 @@ namespace OmenHelper
 
                     e.Graphics.DrawRectangle(axisPen, plot);
 
-                    DrawPaddingBars(e.Graphics, plot, paddingPen, paddingBrush, textBrush);
-                    DrawTelemetryMarker(e.Graphics, plot, _displayCurrentTemp, currentPen, currentBrush, textBrush, "Current", 0);
-                    DrawTelemetryMarker(e.Graphics, plot, _displaySpinUpTemp, spinUpPen, spinUpBrush, textBrush, "Spin up", 1);
-                    DrawTelemetryMarker(e.Graphics, plot, _displaySpinDownTemp, spinDownPen, spinDownBrush, textBrush, "Spin down", 2);
-
-                    if (_points.Count >= 2)
+                    DrawTemperatureAxisMarker(e.Graphics, plot, _displayCurrentTemp, currentPen, currentBrush, textBrush, "Current", 0);
+                    DrawTemperatureAxisMarker(e.Graphics, plot, _displaySpinUpTemp, spinUpPen, spinUpBrush, textBrush, "Spin up", 1);
+                    DrawTemperatureAxisMarker(e.Graphics, plot, _displaySpinDownTemp, spinDownPen, spinDownBrush, textBrush, "Spin down", 2);
+                    DrawRpmAxisMarker(e.Graphics, plot, _displayCurrentRpm, currentPen, currentBrush, textBrush, "Current RPM");
+                    if (!_displayCurrentRpm.HasValue || !_displayWrittenRpm.HasValue || _displayCurrentRpm.Value != _displayWrittenRpm.Value)
                     {
-                        for (int i = 0; i < _points.Count - 1; i++)
-                        {
-                            Point a = PointFromPoint(plot, _points[i]);
-                            Point b = PointFromPoint(plot, _points[i + 1]);
-                            e.Graphics.DrawLine(linePen, a, b);
-                        }
+                        DrawRpmAxisMarker(e.Graphics, plot, _displayWrittenRpm, writtenPen, writtenBrush, textBrush, "Written RPM");
                     }
+
+                    DrawSteppedCurve(e.Graphics, plot, linePen);
 
                     for (int i = 0; i < _points.Count; i++)
                     {
@@ -634,11 +669,12 @@ namespace OmenHelper
                             e.Graphics.DrawEllipse(Pens.DarkGreen, ellipse);
                         }
 
-                        string label = string.Format(CultureInfo.InvariantCulture, "{0}°C / {1} RPM", _points[i].Temp, _points[i].Rpm);
-                        e.Graphics.DrawString(label, Font, textBrush, p.X + 10, p.Y - 10);
+                        string tempLabel = _points[i].Temp.ToString(CultureInfo.InvariantCulture) + "°C";
+                        string rpmLabel = _points[i].Rpm.ToString(CultureInfo.InvariantCulture) + " RPM";
+                        DrawPointLabel(e.Graphics, textBrush, p, tempLabel, rpmLabel);
                     }
 
-                    DrawLegend(e.Graphics, textBrush, paddingBrush, currentBrush, spinUpBrush, spinDownBrush);
+                    DrawLegend(e.Graphics, textBrush, currentBrush, writtenBrush, spinUpBrush, spinDownBrush);
                 }
             }
 
@@ -648,6 +684,8 @@ namespace OmenHelper
                 changed |= StepTowards(ref _displayCurrentTemp, _targetCurrentTemp, 0.25);
                 changed |= StepTowards(ref _displaySpinUpTemp, _targetSpinUpTemp, 0.25);
                 changed |= StepTowards(ref _displaySpinDownTemp, _targetSpinDownTemp, 0.25);
+                changed |= StepTowards(ref _displayCurrentRpm, _targetCurrentRpm);
+                changed |= StepTowards(ref _displayWrittenRpm, _targetWrittenRpm);
 
                 if (!changed)
                 {
@@ -786,32 +824,7 @@ namespace OmenHelper
                 }
             }
 
-            private void DrawPaddingBars(Graphics graphics, Rectangle plot, Pen barPen, Brush barBrush, Brush textBrush)
-            {
-                int padding = Math.Max(0, _breakpointPaddingCelsius);
-                if (padding <= 0)
-                {
-                    return;
-                }
-
-                for (int i = 0; i < _points.Count; i++)
-                {
-                    GraphPoint point = _points[i];
-                    int leftTemp = ClampTemp(point.Temp - padding);
-                    int rightTemp = ClampTemp(point.Temp + padding);
-                    Point left = new Point(TempToX(plot, leftTemp), RpmToY(plot, point.Rpm));
-                    Point right = new Point(TempToX(plot, rightTemp), RpmToY(plot, point.Rpm));
-                    Point center = PointFromPoint(plot, point);
-
-                    graphics.DrawLine(barPen, left, right);
-                    DrawVerticalCap(graphics, barPen, left, 6);
-                    DrawVerticalCap(graphics, barPen, right, 6);
-                    graphics.FillEllipse(barBrush, center.X - 3, center.Y - 3, 6, 6);
-                    graphics.DrawString("|--o---|", Font, textBrush, center.X + 8, center.Y - 18);
-                }
-            }
-
-            private void DrawTelemetryMarker(Graphics graphics, Rectangle plot, double? temp, Pen linePen, Brush dotBrush, Brush textBrush, string label, int stackIndex)
+            private void DrawTemperatureAxisMarker(Graphics graphics, Rectangle plot, double? temp, Pen linePen, Brush dotBrush, Brush textBrush, string label, int stackIndex)
             {
                 if (!temp.HasValue)
                 {
@@ -820,21 +833,80 @@ namespace OmenHelper
 
                 int clampedTemp = ClampTemp(temp.Value);
                 int x = TempToX(plot, clampedTemp);
-                int labelY = plot.Top + 4 + (stackIndex * 16);
-                int dotY = plot.Top + 14 + (stackIndex * 10);
+                int labelY = plot.Bottom + 4 + (stackIndex * 16);
+                int tickTop = plot.Bottom - 2;
+                int tickBottom = plot.Bottom + 8;
 
-                graphics.DrawLine(linePen, x, plot.Top, x, plot.Bottom);
-                graphics.FillEllipse(dotBrush, x - 5, dotY - 5, 10, 10);
-                graphics.DrawEllipse(Pens.Black, x - 5, dotY - 5, 10, 10);
+                graphics.DrawLine(linePen, x, tickTop, x, tickBottom);
+                graphics.FillEllipse(dotBrush, x - 5, plot.Bottom - 5, 10, 10);
+                graphics.DrawEllipse(Pens.Black, x - 5, plot.Bottom - 5, 10, 10);
                 graphics.DrawString(label + ": " + clampedTemp.ToString(CultureInfo.InvariantCulture) + "°C", Font, textBrush, x + 8, labelY);
             }
 
-            private void DrawLegend(Graphics graphics, Brush textBrush, Brush paddingBrush, Brush currentBrush, Brush spinUpBrush, Brush spinDownBrush)
+            private void DrawRpmAxisMarker(Graphics graphics, Rectangle plot, int? rpm, Pen linePen, Brush dotBrush, Brush textBrush, string label)
+            {
+                if (!rpm.HasValue)
+                {
+                    return;
+                }
+
+                int clampedRpm = ClampRpm(rpm.Value);
+                int y = RpmToY(plot, clampedRpm);
+                int tickLeft = plot.Left - 8;
+                int tickRight = plot.Left + 2;
+
+                graphics.DrawLine(linePen, tickLeft, y, tickRight, y);
+                using (var blackBrush = new SolidBrush(Color.Black))
+                {
+                    graphics.FillEllipse(blackBrush, plot.Left - 5, y - 5, 10, 10);
+                }
+                graphics.DrawEllipse(Pens.Black, plot.Left - 5, y - 5, 10, 10);
+                graphics.DrawString(label + ": " + clampedRpm.ToString(CultureInfo.InvariantCulture) + " RPM", Font, textBrush, 4, y - 8);
+            }
+
+            private void DrawSteppedCurve(Graphics graphics, Rectangle plot, Pen linePen)
+            {
+                if (_points.Count == 0)
+                {
+                    return;
+                }
+
+                if (_points.Count == 1)
+                {
+                    Point only = PointFromPoint(plot, _points[0]);
+                    graphics.DrawLine(linePen, plot.Left, only.Y, plot.Right, only.Y);
+                    return;
+                }
+
+                Point first = PointFromPoint(plot, _points[0]);
+                int firstMidX = TempToX(plot, MidpointTemp(_points[0].Temp, _points[1].Temp));
+                graphics.DrawLine(linePen, plot.Left, first.Y, firstMidX, first.Y);
+
+                for (int i = 0; i < _points.Count - 1; i++)
+                {
+                    GraphPoint a = _points[i];
+                    GraphPoint b = _points[i + 1];
+                    Point aPoint = PointFromPoint(plot, a);
+                    Point bPoint = PointFromPoint(plot, b);
+                    int midX = TempToX(plot, MidpointTemp(a.Temp, b.Temp));
+
+                    graphics.DrawLine(linePen, aPoint.X, aPoint.Y, midX, aPoint.Y);
+                    graphics.DrawLine(linePen, midX, aPoint.Y, midX, bPoint.Y);
+                    graphics.DrawLine(linePen, midX, bPoint.Y, bPoint.X, bPoint.Y);
+                }
+
+                Point last = PointFromPoint(plot, _points[_points.Count - 1]);
+                int lastMidX = TempToX(plot, MidpointTemp(_points[_points.Count - 2].Temp, _points[_points.Count - 1].Temp));
+                graphics.DrawLine(linePen, lastMidX, last.Y, plot.Right, last.Y);
+            }
+
+            private void DrawLegend(Graphics graphics, Brush textBrush, Brush currentBrush, Brush writtenBrush, Brush spinUpBrush, Brush spinDownBrush)
             {
                 int x = 54;
                 int y = 6;
-                DrawLegendItem(graphics, textBrush, paddingBrush, "|--o---| padding", ref x, y);
                 DrawLegendItem(graphics, textBrush, currentBrush, "Current temp", ref x, y);
+                DrawLegendItem(graphics, textBrush, currentBrush, "Current RPM", ref x, y);
+                DrawLegendItem(graphics, textBrush, writtenBrush, "Written RPM", ref x, y);
                 DrawLegendItem(graphics, textBrush, spinUpBrush, "Spin up avg", ref x, y);
                 DrawLegendItem(graphics, textBrush, spinDownBrush, "Spin down avg", ref x, y);
             }
@@ -886,6 +958,17 @@ namespace OmenHelper
                 return true;
             }
 
+            private static bool StepTowards(ref int? current, int? target)
+            {
+                if (current == target)
+                {
+                    return false;
+                }
+
+                current = target;
+                return true;
+            }
+
             private Rectangle GetPlotArea()
             {
                 return new Rectangle(48, 28, Math.Max(1, ClientSize.Width - 70), Math.Max(1, ClientSize.Height - 64));
@@ -913,8 +996,18 @@ namespace OmenHelper
 
             private static int TempToX(Rectangle plot, int temp)
             {
+                return TempToX(plot, (double)temp);
+            }
+
+            private static int TempToX(Rectangle plot, double temp)
+            {
                 double normalized = (temp - MinTemp) / (double)(MaxTemp - MinTemp);
                 return plot.Left + (int)Math.Round(normalized * plot.Width);
+            }
+
+            private static double MidpointTemp(int tempA, int tempB)
+            {
+                return (tempA + tempB) / 2.0;
             }
 
             private static int RpmToY(Rectangle plot, int rpm)
@@ -933,6 +1026,16 @@ namespace OmenHelper
             {
                 double normalized = (plot.Bottom - y) / (double)plot.Height;
                 return (int)Math.Round(MinRpm + normalized * (MaxRpm - MinRpm));
+            }
+
+            private void DrawPointLabel(Graphics graphics, Brush textBrush, Point point, string tempLabel, string rpmLabel)
+            {
+                SizeF tempSize = graphics.MeasureString(tempLabel, Font);
+                SizeF rpmSize = graphics.MeasureString(rpmLabel, Font);
+                float tempX = point.X - (tempSize.Width / 2f);
+                float rpmX = point.X - (rpmSize.Width / 2f);
+                graphics.DrawString(tempLabel, Font, textBrush, tempX, point.Y - PointRadius - tempSize.Height - 2f);
+                graphics.DrawString(rpmLabel, Font, textBrush, rpmX, point.Y + PointRadius + 1f);
             }
 
             private static Point PointFromPoint(Rectangle plot, GraphPoint point)
