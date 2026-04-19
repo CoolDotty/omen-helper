@@ -12,6 +12,16 @@ internal sealed class DiagnosticsReportSnapshot
     public bool CurrentModeIsInferred { get; set; }
     public string CurrentThermalMode { get; set; }
     public string CurrentLegacyFanMode { get; set; }
+    public string CpuFanRpm { get; set; }
+    public string GpuFanRpm { get; set; }
+    public string FanRpmSource { get; set; }
+    public string FanRpmSummary { get; set; }
+    public bool FanRpmReadSucceeded { get; set; }
+    public string CpuTemperatureC { get; set; }
+    public string GpuTemperatureC { get; set; }
+    public string ChassisTemperatureC { get; set; }
+    public string TemperatureSource { get; set; }
+    public bool TemperatureReadSucceeded { get; set; }
     public string FanMinimumRpm { get; set; }
     public string FanMinimumOverrideRpm { get; set; }
     public string CurrentGraphicsMode { get; set; }
@@ -68,6 +78,7 @@ internal sealed class DiagnosticsReportSnapshot
     public string LastGraphicsRequestMode { get; set; }
     public string LastGraphicsRequestReturnCode { get; set; }
     public string MaxFanBios { get; set; }
+    public IReadOnlyList<string> FanSensorLines { get; set; }
 
     public IReadOnlyList<string> RecentEvents { get; set; }
 }

@@ -17,6 +17,8 @@ internal sealed class MainForm : Form
     private readonly Button _diagnosticsButton = new Button();
     private DiagnosticsForm _diagnosticsForm;
     private readonly Timer _powerModeTimer = new Timer();
+    private readonly Timer _fanTelemetryTimer = new Timer();
+    private bool _telemetryRefreshInProgress;
 
     public MainForm()
     {
@@ -31,6 +33,9 @@ internal sealed class MainForm : Form
         FormClosing += OnFormClosing;
         _powerModeTimer.Interval = 3000;
         _powerModeTimer.Tick += async (_, __) => await SyncPowerSourceModeAsync();
+
+        _fanTelemetryTimer.Interval = 1000;
+        _fanTelemetryTimer.Tick += async (_, __) => await RefreshTelemetryAsync();
     }
 
     private void InitializeUi()
@@ -87,12 +92,14 @@ internal sealed class MainForm : Form
         _controller.Start();
         LoadPowerModePreferencesIntoUi();
         _powerModeTimer.Start();
+        _fanTelemetryTimer.Start();
         _ = SyncPowerSourceModeAsync();
     }
 
     private void OnFormClosing(object sender, FormClosingEventArgs e)
     {
         _powerModeTimer.Stop();
+        _fanTelemetryTimer.Stop();
         _diagnosticsForm?.Close();
         _controller.Dispose();
     }
@@ -141,6 +148,25 @@ internal sealed class MainForm : Form
         await _controller.SyncPowerSourcePerformanceModeAsync(pluggedIn).ConfigureAwait(true);
     }
 
+    private async Task RefreshTelemetryAsync()
+    {
+        if (_telemetryRefreshInProgress || IsDisposed)
+        {
+            return;
+        }
+
+        _telemetryRefreshInProgress = true;
+        try
+        {
+            await _controller.RefreshHardwareTelemetryAsync().ConfigureAwait(true);
+        }
+        finally
+        {
+            _telemetryRefreshInProgress = false;
+        }
+    }
+
+
     private void ShowDiagnosticsWindow()
     {
         if (_diagnosticsForm != null && !_diagnosticsForm.IsDisposed)
@@ -149,7 +175,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        _diagnosticsForm = new DiagnosticsForm(() => _controller.BuildDiagnosticsReportAsync());
+        _diagnosticsForm = new DiagnosticsForm(() => _controller.BuildDiagnosticsReportAsync(), (commandType, input, label, outSize) => _controller.ProbeTemperatureCommandAsync(commandType, input, label, outSize));
         _diagnosticsForm.Show(this);
     }
 }

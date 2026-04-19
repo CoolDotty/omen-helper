@@ -20,6 +20,17 @@ internal sealed class PerformanceControlState
 
     public string CurrentLegacyFanMode { get; set; }
 
+    public int? CpuFanRpm { get; set; }
+    public int? GpuFanRpm { get; set; }
+    public string FanRpmSource { get; set; }
+    public bool FanRpmReadSucceeded { get; set; }
+    public double? CpuTemperatureC { get; set; }
+    public double? GpuTemperatureC { get; set; }
+    public double? ChassisTemperatureC { get; set; }
+    public string TemperatureSource { get; set; }
+    public bool TemperatureReadSucceeded { get; set; }
+    public string CurrentFanRpmSummary { get; set; }
+
     public int CurrentFanMinimumRpm { get; set; }
 
     public int? FanMinimumOverrideRpm { get; set; }

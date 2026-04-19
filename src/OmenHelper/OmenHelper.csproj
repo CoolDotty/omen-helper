@@ -10,6 +10,8 @@
     <Prefer32Bit>false</Prefer32Bit>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <GenerateResourceUsePreserializedResources>true</GenerateResourceUsePreserializedResources>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
     <AssemblyName>OmenHelper</AssemblyName>
     <RootNamespace>OmenHelper</RootNamespace>
     <DefaultItemExcludes>$(DefaultItemExcludes);dlldumps\**\*</DefaultItemExcludes>
@@ -29,13 +31,29 @@
       <Private>false</Private>
     </Reference>
     <Reference Include="System.Management" />
+    <Reference Include="LibreHardwareMonitorLib">
+      <HintPath>bin_check\LibreHardwareMonitorLib.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Buffers">
+      <HintPath>bin_check\System.Buffers.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Memory">
+      <HintPath>bin_check\System.Memory.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Numerics.Vectors">
+      <HintPath>bin_check\System.Numerics.Vectors.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe">
+      <HintPath>bin_check\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="LibreHardwareMonitorLib">
-      <HintPath>..\..\bin_temp5\LibreHardwareMonitorLib.dll</HintPath>
-      <Private>true</Private>
-    </Reference>
     <Reference Include="BlackSharp.Core">
       <HintPath>..\..\bin_temp5\BlackSharp.Core.dll</HintPath>
       <Private>true</Private>

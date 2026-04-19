@@ -2,7 +2,7 @@
 
 BIOS/WMI-only replacement utility for OMEN performance controls on the OMEN Transcend 14.
 
-The app is a WinForms tool that talks directly to HP firmware/driver surfaces instead of automating the OMEN Gaming Hub UI.
+The app is a WinForms tool that talks directly to HP BIOS/WMI firmware surfaces instead of automating the OMEN Gaming Hub UI.
 
 ## Getting Started
 
@@ -50,7 +50,7 @@ src\OmenHelper\bin\Debug\net48\OmenHelper.exe
 - The source tree lives under `src/OmenHelper/`.
 - `MainForm` is the app shell, while orchestration lives under `src/OmenHelper/Application/` and low-level firmware access lives under `src/OmenHelper/Infrastructure/`.
 - `BiosCommandCatalog`, `PerformanceModeFirmwareMap`, and `GraphicsSupportPolicy` hold the shared command and display mappings.
-- LibreHardwareMonitor is currently referenced from the local `bin_temp5` cache in this workspace. If you are bringing up the repo on another machine, you may need to restore those binaries or convert the project back to NuGet package references.
+- Fan RPM telemetry is polled from BIOS/WMI and shown in the UI.
 
 ## Repository Layout
 

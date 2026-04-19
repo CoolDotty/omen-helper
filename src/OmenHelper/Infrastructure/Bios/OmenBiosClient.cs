@@ -207,6 +207,11 @@ internal sealed class OmenBiosClient : IDisposable
         });
     }
 
+    public Task<BiosWmiResult> ProbeTemperatureCommandAsync(int commandType, byte[] inputData, int returnDataSize = 4)
+    {
+        return Task.Run(() => Execute(BiosCommandCatalog.PerformancePlatformCommand, commandType, inputData, returnDataSize));
+    }
+
     public Task<byte[]> GetSystemDesignDataAsync()
     {
         return Task.Run(() =>

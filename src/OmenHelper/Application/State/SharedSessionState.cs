@@ -22,6 +22,15 @@ internal sealed class SharedSessionState
     public FanMode CurrentLegacyFanMode { get; set; } = FanMode.Normal;
     public bool MaxFanEnabled { get; set; }
     public GraphicsSwitcherMode CurrentGraphicsMode { get; set; } = GraphicsSwitcherMode.Unknown;
+    public int? CpuFanRpm { get; set; }
+    public int? GpuFanRpm { get; set; }
+    public string FanRpmSource { get; set; } = string.Empty;
+    public bool FanRpmReadSucceeded { get; set; }
+    public double? CpuTemperatureC { get; set; }
+    public double? GpuTemperatureC { get; set; }
+    public double? ChassisTemperatureC { get; set; }
+    public string TemperatureSource { get; set; } = string.Empty;
+    public bool TemperatureReadSucceeded { get; set; }
     public int? FanMinimumOverrideRpm { get; set; }
     public bool ExtremeUnlocked { get; set; } = true;
     public bool UnleashVisible { get; set; } = true;
@@ -105,9 +114,19 @@ internal sealed class SharedSessionState
             CurrentThermalMode = CurrentThermalMode.ToString(),
             MaxFanEnabled = MaxFanEnabled,
             CurrentLegacyFanMode = CurrentLegacyFanMode.ToString(),
+            CurrentFanRpmSummary = DescribeFanRpm(),
             CurrentFanMinimumRpm = GetConfiguredFanMinimumRpm(),
             FanMinimumOverrideRpm = FanMinimumOverrideRpm,
             CurrentGraphicsMode = CurrentGraphicsMode.ToString(),
+            CpuFanRpm = CpuFanRpm,
+            GpuFanRpm = GpuFanRpm,
+            FanRpmSource = FanRpmSource,
+            FanRpmReadSucceeded = FanRpmReadSucceeded,
+            CpuTemperatureC = CpuTemperatureC,
+            GpuTemperatureC = GpuTemperatureC,
+            ChassisTemperatureC = ChassisTemperatureC,
+            TemperatureSource = TemperatureSource,
+            TemperatureReadSucceeded = TemperatureReadSucceeded,
             GraphicsModeSwitchSupported = GraphicsModeSwitchSupported,
             GraphicsSupportsUma = GraphicsSupportsUma,
             GraphicsSupportsHybrid = GraphicsSupportsHybrid,
@@ -135,5 +154,18 @@ internal sealed class SharedSessionState
     private int GetConfiguredFanMinimumRpm()
     {
         return FanMinimumOverrideRpm.HasValue ? FanMinimumOverrideRpm.Value : OmenHelper.Domain.Firmware.PerformanceModeFirmwareMap.GetFanMinimumRpm(CurrentMode);
+    }
+
+    private string DescribeFanRpm()
+    {
+        string cpu = CpuFanRpm.HasValue ? CpuFanRpm.Value.ToString("N0") + " RPM" : "CPU <unavailable>";
+        string gpu = GpuFanRpm.HasValue ? GpuFanRpm.Value.ToString("N0") + " RPM" : "GPU <unavailable>";
+
+        if (!CpuFanRpm.HasValue && !GpuFanRpm.HasValue)
+        {
+            return "<unavailable>";
+        }
+
+        return cpu + " | " + gpu;
     }
 }

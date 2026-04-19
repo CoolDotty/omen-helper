@@ -20,6 +20,16 @@ internal sealed class DiagnosticsReportBuilder
         builder.AppendLine("  Mode Inferred: " + snapshot.CurrentModeIsInferred);
         builder.AppendLine("  Thermal: " + snapshot.CurrentThermalMode);
         builder.AppendLine("  Legacy Fan: " + snapshot.CurrentLegacyFanMode);
+        builder.AppendLine("  Fan RPM Source: " + snapshot.FanRpmSource);
+        builder.AppendLine("  Fan RPM Summary: " + snapshot.FanRpmSummary);
+        builder.AppendLine("  Fan RPM Read Succeeded: " + snapshot.FanRpmReadSucceeded);
+        builder.AppendLine("  CPU Fan RPM: " + snapshot.CpuFanRpm);
+        builder.AppendLine("  GPU Fan RPM: " + snapshot.GpuFanRpm);
+        builder.AppendLine("  Temperature Source: " + snapshot.TemperatureSource);
+        builder.AppendLine("  Temperature Read Succeeded: " + snapshot.TemperatureReadSucceeded);
+        builder.AppendLine("  CPU Temperature C: " + snapshot.CpuTemperatureC);
+        builder.AppendLine("  GPU Temperature C: " + snapshot.GpuTemperatureC);
+        builder.AppendLine("  Chassis Temperature C: " + snapshot.ChassisTemperatureC);
         builder.AppendLine("  Fan Minimum RPM: " + snapshot.FanMinimumRpm + (snapshot.FanMinimumOverrideRpm == "<none>" ? " (mode default)" : " (custom)"));
         builder.AppendLine("  Graphics: " + snapshot.CurrentGraphicsMode);
         if (!string.IsNullOrWhiteSpace(snapshot.LastPerformanceRequestMode))
@@ -73,6 +83,20 @@ internal sealed class DiagnosticsReportBuilder
         builder.AppendLine("  LastGraphicsRequestMode: " + snapshot.LastGraphicsRequestMode);
         builder.AppendLine("  LastGraphicsRequestReturnCode: " + snapshot.LastGraphicsRequestReturnCode);
         builder.AppendLine("  MaxFan(BIOS): " + snapshot.MaxFanBios);
+        builder.AppendLine();
+
+        builder.AppendLine("Fan RPM Readback");
+        if (snapshot.FanSensorLines == null || snapshot.FanSensorLines.Count == 0)
+        {
+            builder.AppendLine("<none>");
+        }
+        else
+        {
+            foreach (string line in snapshot.FanSensorLines)
+            {
+                builder.AppendLine(line);
+            }
+        }
         builder.AppendLine();
 
         builder.AppendLine("Recent Events");

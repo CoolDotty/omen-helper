@@ -16,6 +16,7 @@ internal sealed class PerformancePanel : UserControl
 {
     private readonly Label _performanceSummaryLabel = new Label();
     private readonly Label _performanceMetricsLabel = new Label();
+    private readonly Label _temperatureLabel = new Label();
     private readonly ComboBox _batteryModeCombo = new ComboBox();
     private readonly ComboBox _pluggedModeCombo = new ComboBox();
     private readonly Label _powerSourceLabel = new Label();
@@ -116,8 +117,9 @@ internal sealed class PerformancePanel : UserControl
             Dock = DockStyle.Top,
             AutoSize = true,
             ColumnCount = 1,
-            RowCount = 6
+            RowCount = 7
         };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -140,6 +142,9 @@ internal sealed class PerformancePanel : UserControl
         _performanceMetricsLabel.Anchor = AnchorStyles.Right;
         summaryRow.Controls.Add(_performanceSummaryLabel, 0, 0);
         summaryRow.Controls.Add(_performanceMetricsLabel, 1, 0);
+
+        _temperatureLabel.AutoSize = true;
+        _temperatureLabel.Margin = new Padding(0, 0, 0, 8);
 
         FlowLayoutPanel modePanel = new FlowLayoutPanel
         {
@@ -270,11 +275,12 @@ internal sealed class PerformancePanel : UserControl
         _powerSourceLabel.Margin = new Padding(0, 2, 0, 0);
 
         layout.Controls.Add(summaryRow, 0, 0);
-        layout.Controls.Add(modePanel, 0, 1);
-        layout.Controls.Add(thermalPanel, 0, 2);
-        layout.Controls.Add(fanRow, 0, 3);
-        layout.Controls.Add(powerRow, 0, 4);
-        layout.Controls.Add(_powerSourceLabel, 0, 5);
+        layout.Controls.Add(_temperatureLabel, 0, 1);
+        layout.Controls.Add(modePanel, 0, 2);
+        layout.Controls.Add(thermalPanel, 0, 3);
+        layout.Controls.Add(fanRow, 0, 4);
+        layout.Controls.Add(powerRow, 0, 5);
+        layout.Controls.Add(_powerSourceLabel, 0, 6);
         performanceGroup.Controls.Add(layout);
         return performanceGroup;
     }
@@ -321,9 +327,14 @@ internal sealed class PerformancePanel : UserControl
         string modeText = FormatDisplayedPerformanceMode(state);
         string fanMinimumText = state.Initialized && state.Available ? state.CurrentFanMinimumRpm.ToString("N0") + "RPM" : "<unavailable>";
         string fanMinimumSuffix = state.FanMinimumOverrideRpm.HasValue ? " (custom)" : " (mode default)";
+        string fanRpmText = !string.IsNullOrWhiteSpace(state.CurrentFanRpmSummary) ? state.CurrentFanRpmSummary : "<unavailable>";
+        string cpuTempText = FormatTemperature(state.CpuTemperatureC);
+        string gpuTempText = FormatTemperature(state.GpuTemperatureC);
+        string chassisTempText = FormatTemperature(state.ChassisTemperatureC);
 
         _performanceSummaryLabel.Text = "Mode: " + modeText;
-        _performanceMetricsLabel.Text = "Thermal: " + state.CurrentThermalMode + " | Legacy fan: " + state.CurrentLegacyFanMode + " | Fan minimum: " + fanMinimumText + fanMinimumSuffix;
+        _performanceMetricsLabel.Text = "Thermal: " + state.CurrentThermalMode + " | Legacy fan: " + state.CurrentLegacyFanMode + " | Fan RPM: " + fanRpmText + " | Fan minimum: " + fanMinimumText + fanMinimumSuffix;
+        _temperatureLabel.Text = "Temps: CPU " + cpuTempText + " | GPU " + gpuTempText + " | Chassis " + chassisTempText;
     }
 
     private void UpdateMaxFanCheckBoxState(PerformanceControlState state)
@@ -441,6 +452,11 @@ internal sealed class PerformancePanel : UserControl
     private static string GetComboSelectionText(ComboBox comboBox)
     {
         return comboBox.SelectedItem != null ? Convert.ToString(comboBox.SelectedItem) : "<none>";
+    }
+
+    private static string FormatTemperature(double? temperatureC)
+    {
+        return temperatureC.HasValue ? temperatureC.Value.ToString("0.0") + "°C" : "<unavailable>";
     }
 
     private static void SetComboSelection(ComboBox comboBox, string value)
