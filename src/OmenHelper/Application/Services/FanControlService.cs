@@ -84,6 +84,15 @@ internal sealed class FanControlService
         int? previousOverride = _state.FanMinimumOverrideRpm;
         _state.FanMinimumOverrideRpm = rpm;
 
+        if (!rpm.HasValue)
+        {
+            SaveFanMinimumPreference();
+            _state.Log("Fan minimum selection is mode default; skipping BIOS blob write.");
+            await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
+            _state.RaiseStateChanged();
+            return;
+        }
+
         if (!await ApplyFanMinimumBlobAsync("fan minimum selection").ConfigureAwait(false))
         {
             _state.FanMinimumOverrideRpm = previousOverride;
@@ -101,6 +110,12 @@ internal sealed class FanControlService
     {
         try
         {
+            if (!_state.FanMinimumOverrideRpm.HasValue)
+            {
+                _state.Log("Fan minimum blob write skipped (source=" + source + ", mode default).");
+                return true;
+            }
+
             byte[] payload = BuildFanMinimumBlobForCurrentMode();
             _state.Log("Fan minimum blob write request (source=" + source + ", mode=" + FormatPerformanceMode(_state.CurrentMode) + ", minRpm=" + GetConfiguredFanMinimumRpm() + ", payload=" + FormatInputData(payload) + ")");
             OmenBiosClient.BiosWmiResult result = await _biosClient.SetPerformanceStatusBlobAsync(payload).ConfigureAwait(false);
