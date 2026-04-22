@@ -7,7 +7,6 @@ internal sealed class DiagnosticsReportSnapshot
     public int SessionId { get; set; }
     public bool Initialized { get; set; }
     public bool Available { get; set; }
-
     public string CurrentMode { get; set; }
     public bool CurrentModeIsInferred { get; set; }
     public string CurrentThermalMode { get; set; }
@@ -20,12 +19,30 @@ internal sealed class DiagnosticsReportSnapshot
     public string CpuTemperatureC { get; set; }
     public string GpuTemperatureC { get; set; }
     public string ChassisTemperatureC { get; set; }
+    public string AveragedCpuTemperatureC { get; set; }
+    public string AveragedGpuTemperatureC { get; set; }
+    public string AveragedChassisTemperatureC { get; set; }
+    public string PooledTelemetryTimestampUtc { get; set; }
     public string TemperatureSource { get; set; }
     public bool TemperatureReadSucceeded { get; set; }
     public string FanMinimumRpm { get; set; }
     public string FanMinimumOverrideRpm { get; set; }
+    public bool FanCurveRuntimeEnabled { get; set; }
+    public string ActiveFanCurveMode { get; set; }
+    public int FanCurveHysteresisRiseDeltaC { get; set; }
+    public int FanCurveHysteresisDropDeltaC { get; set; }
+    public bool GpuCurveLinked { get; set; }
+    public string DesiredCpuRpm { get; set; }
+    public string DesiredGpuRpm { get; set; }
+    public string AppliedCpuRpm { get; set; }
+    public string AppliedGpuRpm { get; set; }
+    public bool ChassisOverrideChangedTarget { get; set; }
+    public string CpuHysteresisAnchorTemperatureC { get; set; }
+    public string GpuHysteresisAnchorTemperatureC { get; set; }
+    public string ChassisHysteresisAnchorTemperatureC { get; set; }
+    public string LastCurveWriteTimestampUtc { get; set; }
+    public string LastCurveWriteReason { get; set; }
     public string CurrentGraphicsMode { get; set; }
-
     public string LastPerformanceRequestMode { get; set; }
     public string LastPerformanceRequestPath { get; set; }
     public string LastPerfType26ExecuteResult { get; set; }
@@ -34,7 +51,6 @@ internal sealed class DiagnosticsReportSnapshot
     public string LastPerfType34ReturnCode { get; set; }
     public string LastPerfType41ExecuteResult { get; set; }
     public string LastPerfType41ReturnCode { get; set; }
-
     public string LastMaxFanExecuteResult { get; set; }
     public string LastMaxFanReturnCode { get; set; }
     public string PerformanceStatusBlobExecuteResult { get; set; }
@@ -44,19 +60,16 @@ internal sealed class DiagnosticsReportSnapshot
     public string PerformanceStatusBlobSensors { get; set; }
     public string PerformanceStatusBlobChangedBytes { get; set; }
     public string PreviousPerformanceStatusBlobHash { get; set; }
-
     public string FanMinimumBlobExecuteResult { get; set; }
     public string FanMinimumBlobReturnCode { get; set; }
     public string FanMinimumBlobHash { get; set; }
     public string FanMinimumBlobPreview { get; set; }
     public string FanMinimumBlobChangedBytes { get; set; }
     public string PreviousFanMinimumBlobHash { get; set; }
-
     public string ThermalUiType { get; set; }
     public bool ExtremeUnlocked { get; set; }
     public bool UnleashVisible { get; set; }
     public string SupportModes { get; set; }
-
     public string SystemDesignData { get; set; }
     public string ShippingAdapterPowerRating { get; set; }
     public string IsBiosPerformanceModeSupport { get; set; }
@@ -79,6 +92,5 @@ internal sealed class DiagnosticsReportSnapshot
     public string LastGraphicsRequestReturnCode { get; set; }
     public string MaxFanBios { get; set; }
     public IReadOnlyList<string> FanSensorLines { get; set; }
-
     public IReadOnlyList<string> RecentEvents { get; set; }
 }

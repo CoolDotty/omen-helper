@@ -61,6 +61,8 @@ HP calls these via `ExecuteBiosWmiCommandThruDriver` (visible in OMEN BG logs). 
   - Write 128-byte fan minimum/apply blob: `command=131080, commandType=46` (in=128 out=4)
     - We currently treat bytes `0` and `1` as CPU/GPU fan minimum targets in RPM/100.
     - Observed hard minimums: Eco `0`, Balanced `2200`, Performance `2800`, Unleashed `2800`.
+    - Observed BIOS quirk on this machine: nonzero writes below `1300 RPM` are unstable and can cause the fan to bounce between roughly `2800 RPM` and spin-down. Treat the safe write domain as `0` or `>=1300 RPM`.
+    - For curve evaluation and UI rendering, model this as a dead zone: linearly ease between points, but if the interpolated/eased target falls below `1300 RPM`, snap it to `0` rather than coercing it up to `1300`.
     - The OEM app appears to use additional software fan-curve logic, but the BIOS write is the key firmware-backed minimum/target step.
 
 Notes:
@@ -112,6 +114,7 @@ They are no longer part of the app surface.
 - For graphics support, BIOS system-design-data bits are the source of truth for UI gating and diagnostics messaging.
 - When the UI offers a manual refresh, refresh graphics capability bits from BIOS in that path as well; do not assume startup state is still current.
 - After performance mode or thermal/fan mode changes, reapply the observed fan minimum blob (`131080 / 46`) so the firmware does not get left in a null fan state.
+- Preserve the current fan dead-zone behavior in both control logic and UI: below-threshold interpolated values should visually and functionally snap to `0`, with the chart baseline remaining true `0 RPM`.
 
 ## Codebase best practices
 

@@ -152,6 +152,17 @@ internal sealed class OmenBiosClient : IDisposable
         return Task.Run(() => Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.PerformanceStatusWriteType, NormalizeBlob(blob), 4));
     }
 
+    public Task<BiosWmiResult> SetFanTargetsAsync(int cpuRpm, int gpuRpm)
+    {
+        return Task.Run(() =>
+        {
+            byte[] blob = new byte[128];
+            blob[0] = (byte)Math.Max(0, Math.Min(65, NormalizeRpm(cpuRpm) / 100));
+            blob[1] = (byte)Math.Max(0, Math.Min(65, NormalizeRpm(gpuRpm) / 100));
+            return Execute(BiosCommandCatalog.PerformancePlatformCommand, BiosCommandCatalog.PerformanceStatusWriteType, blob, 4);
+        });
+    }
+
     public Task<GraphicsSwitcherMode> GetGraphicsModeAsync()
     {
         return Task.Run(() =>
@@ -349,6 +360,18 @@ internal sealed class OmenBiosClient : IDisposable
 
         Array.Copy(blob, result, Math.Min(blob.Length, result.Length));
         return result;
+    }
+
+    private static int NormalizeRpm(int rpm)
+    {
+        int clamped = Math.Max(0, Math.Min(6500, rpm));
+        int quantized = (int)(Math.Round(clamped / 100.0) * 100.0);
+        if (quantized > 0 && quantized < 1300)
+        {
+            return 0;
+        }
+
+        return quantized;
     }
 
     internal readonly struct BiosWmiResult

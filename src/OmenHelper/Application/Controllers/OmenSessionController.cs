@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Hp.Bridge.Client.SDKs.PerformanceControl.Enums;
 using HP.Omen.Core.Common.PowerControl.Enum;
@@ -8,10 +9,12 @@ using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
 using OmenHelper.Application.Diagnostics;
 using OmenHelper.Application.Services;
 using OmenHelper.Application.State;
+using OmenHelper.Domain.Fan;
 using OmenHelper.Domain.Firmware;
 using OmenHelper.Domain.Graphics;
 using OmenHelper.Infrastructure.Bios;
 using OmenHelper.Infrastructure.Persistence;
+using OmenHelper.Infrastructure.Telemetry;
 
 namespace OmenHelper.Application.Controllers;
 
@@ -24,10 +27,12 @@ internal sealed class OmenSessionController : IDisposable
     private readonly PerformanceModeService _performanceModeService;
     private readonly FanControlService _fanControlService;
     private readonly GraphicsModeService _graphicsModeService;
-    private OmenHelper.Infrastructure.Telemetry.BiosFanTelemetryService _fanTelemetryService;
+    private BiosFanTelemetryService _fanTelemetryService;
     private bool _fanTelemetryServiceAttempted;
-    private OmenHelper.Infrastructure.Telemetry.LibreHardwareTemperatureService _temperatureTelemetryService;
+    private LibreHardwareTemperatureService _temperatureTelemetryService;
     private bool _temperatureTelemetryServiceAttempted;
+    private CancellationTokenSource _workerCancellation;
+    private Task _workerTask;
 
     public OmenSessionController()
     {
@@ -35,8 +40,6 @@ internal sealed class OmenSessionController : IDisposable
         _biosClient = new OmenBiosClient();
         _stateStore = new LocalStateStore();
         _diagnosticsReportBuilder = new DiagnosticsReportBuilder();
-
-        // Note: FanControlService is created first since PerformanceModeService depends on it
         _fanControlService = new FanControlService(_state, _biosClient, _stateStore);
         _graphicsModeService = new GraphicsModeService(_state, _biosClient);
         _performanceModeService = new PerformanceModeService(_state, _biosClient, _stateStore, _fanControlService);
@@ -72,7 +75,7 @@ internal sealed class OmenSessionController : IDisposable
             _state.Log("BIOS WMI init failed: " + ex.Message);
         }
 
-        _state.SupportModes = new System.Collections.Generic.List<string>
+        _state.SupportModes = new List<string>
         {
             PerformanceModeFirmwareMap.FormatDisplayName(PerformanceMode.Default),
             PerformanceModeFirmwareMap.FormatDisplayName(PerformanceMode.Performance),
@@ -83,15 +86,18 @@ internal sealed class OmenSessionController : IDisposable
         _performanceModeService.LoadRememberedPerformanceMode();
         _performanceModeService.LoadPowerModePreferences();
         _fanControlService.LoadFanMinimumPreference();
+        _fanControlService.LoadFanCurveStore();
+        _fanControlService.RefreshActiveCurveState();
 
         _state.Started = true;
+        _workerCancellation = new CancellationTokenSource();
+        _workerTask = RunWorkerLoopAsync(_workerCancellation.Token);
 
         _ = RequestInitializationAsync();
 
         _state.Log("Started control path: BIOS/WMI only. HP pipe support removed.");
         _state.Log("Process: " + (Environment.Is64BitProcess ? "x64" : "x86") + ", OS: " + (Environment.Is64BitOperatingSystem ? "x64" : "x86"));
         _state.Log("Elevation: " + (IsAdministrator() ? "admin" : "not-admin"));
-
     }
 
     public async Task RequestInitializationAsync()
@@ -101,14 +107,19 @@ internal sealed class OmenSessionController : IDisposable
             bool maxFanEnabled = await _fanControlService.GetMaxFanAsync().ConfigureAwait(false);
             _graphicsModeService.RefreshGraphicsMode();
             _graphicsModeService.RefreshGraphicsSupport();
-            await RefreshFanTelemetryInternalAsync().ConfigureAwait(false);
-            await RefreshTemperatureTelemetryInternalAsync().ConfigureAwait(false);
+            await RefreshHardwareTelemetryInternalAsync().ConfigureAwait(false);
             await _performanceModeService.RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
-            if (_state.FanMinimumOverrideRpm.HasValue)
+            if (_state.FanCurveRuntimeEnabled)
             {
-                await _fanControlService.ApplyFanMinimumBlobAsync("startup preference").ConfigureAwait(false);
-                await _performanceModeService.RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
+                await _fanControlService.ApplyCurrentCurveImmediatelyAsync("startup curve activation").ConfigureAwait(false);
             }
+            else
+            {
+                await _fanControlService.ApplyCurrentFanTargetAsync("startup fan target activation").ConfigureAwait(false);
+            }
+
+            await _performanceModeService.RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
+
             _state.Initialized = true;
             _state.Available = true;
             _state.TrackEvent("Firmware", "Read max fan=" + (maxFanEnabled ? "On" : "Off"));
@@ -125,8 +136,7 @@ internal sealed class OmenSessionController : IDisposable
 
     public async Task<string> BuildDiagnosticsReportAsync()
     {
-        await RefreshFanTelemetryInternalAsync().ConfigureAwait(false);
-        await RefreshTemperatureTelemetryInternalAsync().ConfigureAwait(false);
+        await RefreshHardwareTelemetryInternalAsync().ConfigureAwait(false);
         await _performanceModeService.RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);
 
         byte[] systemDesignData = Array.Empty<byte>();
@@ -157,13 +167,13 @@ internal sealed class OmenSessionController : IDisposable
             maxFanText = "error: " + ex.Message;
         }
 
-        System.Collections.Generic.List<string> recentEvents;
+        List<string> recentEvents;
         lock (_state.DiagnosticsSync)
         {
-            recentEvents = new System.Collections.Generic.List<string>(_state.RecentEvents);
+            recentEvents = new List<string>(_state.RecentEvents);
         }
 
-        System.Collections.Generic.IReadOnlyList<string> fanSensorLines = GetFanSensorLines();
+        IReadOnlyList<string> fanSensorLines = GetFanSensorLines();
 
         DiagnosticsReportSnapshot snapshot = new DiagnosticsReportSnapshot
         {
@@ -182,10 +192,29 @@ internal sealed class OmenSessionController : IDisposable
             CpuTemperatureC = _state.CpuTemperatureC.HasValue ? _state.CpuTemperatureC.Value.ToString("0.0") : "<none>",
             GpuTemperatureC = _state.GpuTemperatureC.HasValue ? _state.GpuTemperatureC.Value.ToString("0.0") : "<none>",
             ChassisTemperatureC = _state.ChassisTemperatureC.HasValue ? _state.ChassisTemperatureC.Value.ToString("0.0") : "<none>",
+            AveragedCpuTemperatureC = _state.AveragedCpuTemperatureC.HasValue ? _state.AveragedCpuTemperatureC.Value.ToString("0.0") : "<none>",
+            AveragedGpuTemperatureC = _state.AveragedGpuTemperatureC.HasValue ? _state.AveragedGpuTemperatureC.Value.ToString("0.0") : "<none>",
+            AveragedChassisTemperatureC = _state.AveragedChassisTemperatureC.HasValue ? _state.AveragedChassisTemperatureC.Value.ToString("0.0") : "<none>",
+            PooledTelemetryTimestampUtc = _state.PooledTelemetryTimestampUtc.HasValue ? _state.PooledTelemetryTimestampUtc.Value.ToString("O") : "<none>",
             TemperatureSource = string.IsNullOrWhiteSpace(_state.TemperatureSource) ? "<none>" : _state.TemperatureSource,
             TemperatureReadSucceeded = _state.TemperatureReadSucceeded,
             FanMinimumRpm = GetConfiguredFanMinimumRpm().ToString(),
             FanMinimumOverrideRpm = _state.FanMinimumOverrideRpm.HasValue ? _state.FanMinimumOverrideRpm.Value.ToString() : "<none>",
+            FanCurveRuntimeEnabled = _state.FanCurveRuntimeEnabled,
+            ActiveFanCurveMode = _state.ActiveFanCurveMode,
+            FanCurveHysteresisRiseDeltaC = _state.FanCurveHysteresisRiseDeltaC,
+            FanCurveHysteresisDropDeltaC = _state.FanCurveHysteresisDropDeltaC,
+            GpuCurveLinked = _state.GpuCurveLinked,
+            DesiredCpuRpm = _state.CurveDesiredCpuRpm.ToString(),
+            DesiredGpuRpm = _state.CurveDesiredGpuRpm.ToString(),
+            AppliedCpuRpm = _state.CurveAppliedCpuRpm.ToString(),
+            AppliedGpuRpm = _state.CurveAppliedGpuRpm.ToString(),
+            ChassisOverrideChangedTarget = _state.CurveChassisOverrideUsed,
+            CpuHysteresisAnchorTemperatureC = _state.CpuHysteresisAnchorTemperatureC.HasValue ? _state.CpuHysteresisAnchorTemperatureC.Value.ToString("0.0") : "<none>",
+            GpuHysteresisAnchorTemperatureC = _state.GpuHysteresisAnchorTemperatureC.HasValue ? _state.GpuHysteresisAnchorTemperatureC.Value.ToString("0.0") : "<none>",
+            ChassisHysteresisAnchorTemperatureC = _state.ChassisHysteresisAnchorTemperatureC.HasValue ? _state.ChassisHysteresisAnchorTemperatureC.Value.ToString("0.0") : "<none>",
+            LastCurveWriteTimestampUtc = _state.LastCurveWriteTimestampUtc.HasValue ? _state.LastCurveWriteTimestampUtc.Value.ToString("O") : "<none>",
+            LastCurveWriteReason = string.IsNullOrWhiteSpace(_state.LastCurveWriteReason) ? "<none>" : _state.LastCurveWriteReason,
             CurrentGraphicsMode = _state.CurrentGraphicsMode.ToString(),
             LastPerformanceRequestMode = string.IsNullOrWhiteSpace(_state.LastPerformanceRequestMode) ? "<none>" : _state.LastPerformanceRequestMode,
             LastPerformanceRequestPath = string.IsNullOrWhiteSpace(_state.LastPerformanceRequestPath) ? "<none>" : _state.LastPerformanceRequestPath,
@@ -242,35 +271,31 @@ internal sealed class OmenSessionController : IDisposable
         return _diagnosticsReportBuilder.Build(snapshot);
     }
 
-    public Task SetPerformanceModeAsync(PerformanceMode mode) => _performanceModeService.SetPerformanceModeAsync(mode);
+    public async Task SetPerformanceModeAsync(PerformanceMode mode)
+    {
+        await _performanceModeService.SetPerformanceModeAsync(mode).ConfigureAwait(false);
+        await _fanControlService.OnPerformanceModeChangedAsync().ConfigureAwait(false);
+        _state.RaiseStateChanged();
+    }
 
     public Task SetThermalModeAsync(ThermalControl thermalControl) => _performanceModeService.SetThermalModeAsync(thermalControl);
-
     public Task<bool> GetMaxFanAsync() => _fanControlService.GetMaxFanAsync();
-
     public Task SetMaxFanAsync(bool enabled) => _fanControlService.SetMaxFanAsync(enabled);
-
     public Task SetLegacyFanModeAsync(FanMode mode) => _fanControlService.SetLegacyFanModeAsync(mode);
-
     public int? GetFanMinimumOverrideRpm() => _fanControlService.GetFanMinimumOverrideRpm();
-
     public int GetEffectiveFanMinimumRpm() => _fanControlService.GetEffectiveFanMinimumRpm();
-
-    public System.Collections.Generic.IReadOnlyList<int> GetFanMinimumOptions() => _fanControlService.GetFanMinimumOptions();
-
+    public IReadOnlyList<int> GetFanMinimumOptions() => _fanControlService.GetFanMinimumOptions();
     public Task SetFanMinimumOverrideRpmAsync(int? rpm) => _fanControlService.SetFanMinimumOverrideRpmAsync(rpm);
-
     public Task<bool> SetGraphicsModeAsync(GraphicsSwitcherMode mode) => _graphicsModeService.SetGraphicsModeAsync(mode);
-
     public PerformanceMode? GetBatteryPowerModePreference() => _performanceModeService.GetBatteryPowerModePreference();
-
     public PerformanceMode? GetPluggedInPowerModePreference() => _performanceModeService.GetPluggedInPowerModePreference();
-
     public void SetBatteryPowerModePreference(PerformanceMode? mode) => _performanceModeService.SetBatteryPowerModePreference(mode);
-
     public void SetPluggedInPowerModePreference(PerformanceMode? mode) => _performanceModeService.SetPluggedInPowerModePreference(mode);
-
     public Task SyncPowerSourcePerformanceModeAsync(bool pluggedIn) => _performanceModeService.SyncPowerSourcePerformanceModeAsync(pluggedIn);
+    public void SetFanCurveRuntimeEnabled(bool enabled) => _fanControlService.SetCurveRuntimeEnabled(enabled);
+    public void SetFanCurveGpuLinked(bool linked) => _fanControlService.SetGpuLinked(linked);
+    public Task SetFanCurveHysteresisAsync(int riseDeltaC, int dropDeltaC) => _fanControlService.SetFanCurveHysteresisAsync(riseDeltaC, dropDeltaC);
+    public void SetFanCurveProfile(FanCurveKind kind, FanCurveProfile profile) => _fanControlService.SetCurveProfile(kind, profile);
 
     public void Dispose()
     {
@@ -280,20 +305,29 @@ internal sealed class OmenSessionController : IDisposable
         }
 
         _state.Disposed = true;
+        try
+        {
+            _workerCancellation?.Cancel();
+            _workerTask?.Wait(2000);
+        }
+        catch
+        {
+        }
+
+        _temperatureTelemetryService?.Dispose();
         _fanTelemetryService?.Dispose();
         _biosClient?.Dispose();
     }
 
-    private System.Collections.Generic.IReadOnlyList<string> GetFanSensorLines()
+    private IReadOnlyList<string> GetFanSensorLines()
     {
         try
         {
-            List<string> lines = new System.Collections.Generic.List<string>();
-
-            OmenHelper.Infrastructure.Telemetry.BiosFanTelemetryService telemetryService = EnsureFanTelemetryService();
+            List<string> lines = new List<string>();
+            BiosFanTelemetryService telemetryService = EnsureFanTelemetryService();
             if (telemetryService != null)
             {
-                OmenHelper.Infrastructure.Telemetry.BiosFanTelemetryService.FanTelemetrySnapshot snapshot = telemetryService.GetFanTelemetrySnapshot();
+                BiosFanTelemetryService.FanTelemetrySnapshot snapshot = telemetryService.GetFanTelemetrySnapshot();
                 if (snapshot?.Lines != null)
                 {
                     lines.AddRange(snapshot.Lines);
@@ -305,11 +339,11 @@ internal sealed class OmenSessionController : IDisposable
         catch (Exception ex)
         {
             _state.Log("Fan telemetry unavailable: " + ex.Message);
-            return System.Array.Empty<string>();
+            return Array.Empty<string>();
         }
     }
 
-    private OmenHelper.Infrastructure.Telemetry.BiosFanTelemetryService EnsureFanTelemetryService()
+    private BiosFanTelemetryService EnsureFanTelemetryService()
     {
         if (_fanTelemetryServiceAttempted)
         {
@@ -319,7 +353,7 @@ internal sealed class OmenSessionController : IDisposable
         _fanTelemetryServiceAttempted = true;
         try
         {
-            _fanTelemetryService = new OmenHelper.Infrastructure.Telemetry.BiosFanTelemetryService(_biosClient);
+            _fanTelemetryService = new BiosFanTelemetryService(_biosClient);
         }
         catch (Exception ex)
         {
@@ -330,7 +364,7 @@ internal sealed class OmenSessionController : IDisposable
         return _fanTelemetryService;
     }
 
-    private OmenHelper.Infrastructure.Telemetry.LibreHardwareTemperatureService EnsureTemperatureTelemetryService()
+    private LibreHardwareTemperatureService EnsureTemperatureTelemetryService()
     {
         if (_temperatureTelemetryServiceAttempted)
         {
@@ -340,7 +374,7 @@ internal sealed class OmenSessionController : IDisposable
         _temperatureTelemetryServiceAttempted = true;
         try
         {
-            _temperatureTelemetryService = new OmenHelper.Infrastructure.Telemetry.LibreHardwareTemperatureService();
+            _temperatureTelemetryService = new LibreHardwareTemperatureService();
         }
         catch (Exception ex)
         {
@@ -375,54 +409,9 @@ internal sealed class OmenSessionController : IDisposable
         return "Unknown";
     }
 
-    public Task RefreshFanTelemetryAsync()
+    public Task RefreshHardwareTelemetryAsync()
     {
-        return RefreshFanTelemetryInternalAsync();
-    }
-
-    public async Task RefreshHardwareTelemetryAsync()
-    {
-        await RefreshFanTelemetryInternalAsync().ConfigureAwait(false);
-        await RefreshTemperatureTelemetryInternalAsync().ConfigureAwait(false);
-    }
-
-    public Task RefreshTemperatureTelemetryAsync()
-    {
-        return RefreshTemperatureTelemetryInternalAsync();
-    }
-
-    private async Task RefreshFanTelemetryInternalAsync()
-    {
-        try
-        {
-            OmenHelper.Infrastructure.Telemetry.BiosFanTelemetryService telemetryService = EnsureFanTelemetryService();
-            if (telemetryService == null)
-            {
-                return;
-            }
-
-            OmenHelper.Infrastructure.Telemetry.BiosFanTelemetryService.FanTelemetrySnapshot snapshot =
-                await Task.Run(() => telemetryService.GetFanTelemetrySnapshot()).ConfigureAwait(false);
-
-            lock (_state.DiagnosticsSync)
-            {
-                _state.CpuFanRpm = snapshot?.CpuFanRpm;
-                _state.GpuFanRpm = snapshot?.GpuFanRpm;
-                _state.FanRpmSource = !string.IsNullOrWhiteSpace(snapshot?.Source) ? snapshot.Source : "BIOS/WMI";
-                _state.FanRpmReadSucceeded = snapshot != null && snapshot.IsAvailable;
-            }
-
-            _state.TrackEvent(
-                "Telemetry",
-                "Fan RPM source=" + (string.IsNullOrWhiteSpace(_state.FanRpmSource) ? "<none>" : _state.FanRpmSource) +
-                ", cpu=" + (_state.CpuFanRpm.HasValue ? _state.CpuFanRpm.Value.ToString("N0") : "<none>") +
-                ", gpu=" + (_state.GpuFanRpm.HasValue ? _state.GpuFanRpm.Value.ToString("N0") : "<none>"));
-            _state.RaiseStateChanged();
-        }
-        catch (Exception ex)
-        {
-            _state.Log("BIOS fan telemetry refresh failed: " + ex.Message);
-        }
+        return RefreshHardwareTelemetryInternalAsync();
     }
 
     public async Task<string> ProbeTemperatureSelectorAsync(byte[] inputData, string label)
@@ -442,7 +431,7 @@ internal sealed class OmenSessionController : IDisposable
             throw new ArgumentException("Temperature probe input must be 4 bytes.", nameof(inputData));
         }
 
-        OmenHelper.Infrastructure.Bios.OmenBiosClient.BiosWmiResult result = await _biosClient.ProbeTemperatureCommandAsync(commandType, inputData, returnDataSize).ConfigureAwait(false);
+        OmenBiosClient.BiosWmiResult result = await _biosClient.ProbeTemperatureCommandAsync(commandType, inputData, returnDataSize).ConfigureAwait(false);
         string message = $"Temp probe cmd={commandType} {label}: input={BitConverter.ToString(inputData)} out={returnDataSize} exec={result.ExecuteResult} rc={result.ReturnCode} data={BitConverter.ToString(result.ReturnData ?? Array.Empty<byte>())}";
         _state.Log(message);
         _state.TrackEvent("TempProbe", message);
@@ -450,45 +439,169 @@ internal sealed class OmenSessionController : IDisposable
         return message;
     }
 
-    private async Task RefreshTemperatureTelemetryInternalAsync()
+    private async Task RunWorkerLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            DateTime startedUtc = DateTime.UtcNow;
+            try
+            {
+                await RefreshHardwareTelemetryInternalAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _state.Log("Telemetry worker tick failed: " + ex.Message);
+            }
+
+            try
+            {
+                await _fanControlService.MaintainFanTargetKeepaliveAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _state.Log("Fan target keepalive failed: " + ex.Message);
+            }
+
+            try
+            {
+                await RunFirmwareHeartbeatAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _state.Log("Firmware heartbeat failed: " + ex.Message);
+            }
+
+            TimeSpan remaining = TimeSpan.FromSeconds(1) - (DateTime.UtcNow - startedUtc);
+            if (remaining > TimeSpan.Zero)
+            {
+                try
+                {
+                    await Task.Delay(remaining, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    private async Task RefreshHardwareTelemetryInternalAsync()
     {
         try
         {
-            OmenHelper.Infrastructure.Telemetry.LibreHardwareTemperatureService telemetryService = EnsureTemperatureTelemetryService();
-            if (telemetryService == null)
+            BiosFanTelemetryService fanTelemetryService = EnsureFanTelemetryService();
+            LibreHardwareTemperatureService temperatureTelemetryService = EnsureTemperatureTelemetryService();
+            if (fanTelemetryService == null || temperatureTelemetryService == null)
             {
                 return;
             }
 
-            OmenHelper.Infrastructure.Telemetry.LibreHardwareTemperatureService.TemperatureTelemetrySnapshot snapshot =
-                await Task.Run(() => telemetryService.GetTemperatureTelemetrySnapshot(_biosClient)).ConfigureAwait(false);
+            Task<BiosFanTelemetryService.FanTelemetrySnapshot> fanTask = Task.Run(() => fanTelemetryService.GetFanTelemetrySnapshot());
+            Task<LibreHardwareTemperatureService.TemperatureTelemetrySnapshot> tempTask = Task.Run(() => temperatureTelemetryService.GetTemperatureTelemetrySnapshot(_biosClient));
+            await Task.WhenAll(fanTask, tempTask).ConfigureAwait(false);
+
+            BiosFanTelemetryService.FanTelemetrySnapshot fanSnapshot = fanTask.Result;
+            LibreHardwareTemperatureService.TemperatureTelemetrySnapshot tempSnapshot = tempTask.Result;
+            HardwareTelemetrySnapshot snapshot = new HardwareTelemetrySnapshot
+            {
+                TimestampUtc = DateTime.UtcNow,
+                CpuFanRpm = fanSnapshot?.CpuFanRpm,
+                GpuFanRpm = fanSnapshot?.GpuFanRpm,
+                FanSource = !string.IsNullOrWhiteSpace(fanSnapshot?.Source) ? fanSnapshot.Source : "BIOS/WMI",
+                FanReadSucceeded = fanSnapshot != null && fanSnapshot.IsAvailable,
+                CpuTemperatureC = tempSnapshot?.CpuTemperatureC,
+                GpuTemperatureC = tempSnapshot?.GpuTemperatureC,
+                ChassisTemperatureC = tempSnapshot?.ChassisTemperatureC,
+                TemperatureSource = !string.IsNullOrWhiteSpace(tempSnapshot?.Source) ? tempSnapshot.Source : "LibreHardwareMonitor + BIOS/WMI",
+                TemperatureReadSucceeded = tempSnapshot != null && tempSnapshot.IsAvailable
+            };
 
             lock (_state.DiagnosticsSync)
             {
-                _state.CpuTemperatureC = snapshot?.CpuTemperatureC;
-                _state.GpuTemperatureC = snapshot?.GpuTemperatureC;
-                _state.ChassisTemperatureC = snapshot?.ChassisTemperatureC;
-                _state.TemperatureSource = !string.IsNullOrWhiteSpace(snapshot?.Source) ? snapshot.Source : "LibreHardwareMonitor + BIOS/WMI";
-                _state.TemperatureReadSucceeded = snapshot != null && snapshot.IsAvailable;
+                _state.CpuFanRpm = snapshot.CpuFanRpm;
+                _state.GpuFanRpm = snapshot.GpuFanRpm;
+                _state.FanRpmSource = snapshot.FanSource;
+                _state.FanRpmReadSucceeded = snapshot.FanReadSucceeded;
+                _state.CpuTemperatureC = snapshot.CpuTemperatureC;
+                _state.GpuTemperatureC = snapshot.GpuTemperatureC;
+                _state.ChassisTemperatureC = snapshot.ChassisTemperatureC;
+                _state.TemperatureSource = snapshot.TemperatureSource;
+                _state.TemperatureReadSucceeded = snapshot.TemperatureReadSucceeded;
             }
 
-            if (!string.IsNullOrWhiteSpace(snapshot?.Error))
+            if (!string.IsNullOrWhiteSpace(tempSnapshot?.Error))
             {
-                _state.Log("Temperature telemetry snapshot error: " + snapshot.Error);
+                _state.Log("Temperature telemetry snapshot error: " + tempSnapshot.Error);
             }
+
+            await _fanControlService.ProcessTelemetryTickAsync(snapshot).ConfigureAwait(false);
 
             _state.TrackEvent(
                 "Telemetry",
                 "Temp source=" + (string.IsNullOrWhiteSpace(_state.TemperatureSource) ? "<none>" : _state.TemperatureSource) +
                 ", cpu=" + FormatTemperature(_state.CpuTemperatureC) +
                 ", gpu=" + FormatTemperature(_state.GpuTemperatureC) +
-                ", chassis=" + FormatTemperature(_state.ChassisTemperatureC));
+                ", chassis=" + FormatTemperature(_state.ChassisTemperatureC) +
+                ", avgCpu=" + FormatTemperature(_state.AveragedCpuTemperatureC) +
+                ", avgGpu=" + FormatTemperature(_state.AveragedGpuTemperatureC));
             _state.RaiseStateChanged();
         }
         catch (Exception ex)
         {
-            _state.Log("Temperature telemetry refresh failed: " + ex.Message);
+            _state.Log("Hardware telemetry refresh failed: " + ex.Message);
         }
+    }
+
+    private async Task RunFirmwareHeartbeatAsync()
+    {
+        if (!_state.Initialized || !_state.Available)
+        {
+            return;
+        }
+
+        byte[] zeroInput = new byte[4];
+
+        OmenBiosClient.BiosWmiResult type16 = await _biosClient.ExecuteAsync(
+            command: 131080,
+            commandType: 16,
+            inputData: zeroInput,
+            returnDataSize: 4).ConfigureAwait(false);
+
+        OmenBiosClient.BiosWmiResult type35 = await _biosClient.ExecuteAsync(
+            command: 131080,
+            commandType: 35,
+            inputData: zeroInput,
+            returnDataSize: 4).ConfigureAwait(false);
+
+        OmenBiosClient.BiosWmiResult type45 = await _biosClient.ExecuteAsync(
+            command: 131080,
+            commandType: 45,
+            inputData: zeroInput,
+            returnDataSize: 128).ConfigureAwait(false);
+
+        _state.Log("Heartbeat BIOS 131080/16: exec=" + type16.ExecuteResult + " rc=" + type16.ReturnCode + " out=" + FormatReturnBytes(type16.ReturnData, 4));
+        _state.Log("Heartbeat BIOS 131080/35: exec=" + type35.ExecuteResult + " rc=" + type35.ReturnCode + " out=" + FormatReturnBytes(type35.ReturnData, 4));
+        _state.Log("Heartbeat BIOS 131080/45: exec=" + type45.ExecuteResult + " rc=" + type45.ReturnCode + " out=" + FormatReturnBytes(type45.ReturnData, 16));
+        _state.TrackEvent(
+            "Heartbeat",
+            "16 rc=" + type16.ReturnCode + ", 35 rc=" + type35.ReturnCode + ", 45 rc=" + type45.ReturnCode + ", 45 preview=" + FormatReturnBytes(type45.ReturnData, 16));
+    }
+
+    private static string FormatReturnBytes(byte[] data, int take)
+    {
+        if (data == null || data.Length == 0)
+        {
+            return "<empty>";
+        }
+
+        int count = Math.Min(Math.Max(take, 1), data.Length);
+        string prefix = BitConverter.ToString(data, 0, count);
+        return data.Length <= count ? prefix : prefix + "...(len=" + data.Length + ")";
     }
 
     private static string FormatTemperature(double? temperatureC)

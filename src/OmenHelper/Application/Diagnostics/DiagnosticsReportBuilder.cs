@@ -30,7 +30,25 @@ internal sealed class DiagnosticsReportBuilder
         builder.AppendLine("  CPU Temperature C: " + snapshot.CpuTemperatureC);
         builder.AppendLine("  GPU Temperature C: " + snapshot.GpuTemperatureC);
         builder.AppendLine("  Chassis Temperature C: " + snapshot.ChassisTemperatureC);
+        builder.AppendLine("  Avg CPU Temperature C: " + snapshot.AveragedCpuTemperatureC);
+        builder.AppendLine("  Avg GPU Temperature C: " + snapshot.AveragedGpuTemperatureC);
+        builder.AppendLine("  Avg Chassis Temperature C: " + snapshot.AveragedChassisTemperatureC);
+        builder.AppendLine("  Pooled Telemetry Timestamp UTC: " + snapshot.PooledTelemetryTimestampUtc);
         builder.AppendLine("  Fan Minimum RPM: " + snapshot.FanMinimumRpm + (snapshot.FanMinimumOverrideRpm == "<none>" ? " (mode default)" : " (custom)"));
+        builder.AppendLine("  Fan Curve Runtime Enabled: " + snapshot.FanCurveRuntimeEnabled);
+        builder.AppendLine("  Active Fan Curve Mode: " + snapshot.ActiveFanCurveMode);
+        builder.AppendLine("  Fan Curve Hysteresis: rise +" + snapshot.FanCurveHysteresisRiseDeltaC + "°C / drop -" + snapshot.FanCurveHysteresisDropDeltaC + "°C");
+        builder.AppendLine("  GPU Curve Linked: " + snapshot.GpuCurveLinked);
+        builder.AppendLine("  Desired CPU RPM: " + snapshot.DesiredCpuRpm);
+        builder.AppendLine("  Desired GPU RPM: " + snapshot.DesiredGpuRpm);
+        builder.AppendLine("  Applied CPU RPM: " + snapshot.AppliedCpuRpm);
+        builder.AppendLine("  Applied GPU RPM: " + snapshot.AppliedGpuRpm);
+        builder.AppendLine("  Chassis Override Changed Target: " + snapshot.ChassisOverrideChangedTarget);
+        builder.AppendLine("  CPU Hysteresis Anchor Temperature C: " + snapshot.CpuHysteresisAnchorTemperatureC);
+        builder.AppendLine("  GPU Hysteresis Anchor Temperature C: " + snapshot.GpuHysteresisAnchorTemperatureC);
+        builder.AppendLine("  Chassis Hysteresis Anchor Temperature C: " + snapshot.ChassisHysteresisAnchorTemperatureC);
+        builder.AppendLine("  Last Curve Write Timestamp UTC: " + snapshot.LastCurveWriteTimestampUtc);
+        builder.AppendLine("  Last Curve Write Reason: " + snapshot.LastCurveWriteReason);
         builder.AppendLine("  Graphics: " + snapshot.CurrentGraphicsMode);
         if (!string.IsNullOrWhiteSpace(snapshot.LastPerformanceRequestMode))
         {

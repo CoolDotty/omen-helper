@@ -1,8 +1,10 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
 using Hp.Bridge.Client.SDKs.PerformanceControl.Enums;
+using OmenHelper.Domain.Fan;
 using OmenHelper.Domain.Firmware;
 
 namespace OmenHelper.Infrastructure.Persistence;
@@ -13,6 +15,7 @@ internal sealed class LocalStateStore
     private readonly string _performanceModeStatePath;
     private readonly string _powerModePreferencePath;
     private readonly string _fanMinimumPreferencePath;
+    private readonly string _fanCurveStatePath;
 
     public LocalStateStore()
     {
@@ -22,6 +25,7 @@ internal sealed class LocalStateStore
         _performanceModeStatePath = Path.Combine(_baseDirectory, "performance-mode.txt");
         _powerModePreferencePath = Path.Combine(_baseDirectory, "power-mode-preferences.txt");
         _fanMinimumPreferencePath = Path.Combine(_baseDirectory, "fan-minimum-preference.txt");
+        _fanCurveStatePath = Path.Combine(_baseDirectory, "fan-curves.json");
     }
 
     public bool TryLoadRememberedPerformanceMode(out PerformanceMode mode)
@@ -127,6 +131,43 @@ internal sealed class LocalStateStore
         File.WriteAllText(_fanMinimumPreferencePath, FormatFanMinimumPreference(rpm));
     }
 
+    public bool TryLoadFanCurveStore(out FanCurveStore store)
+    {
+        store = null;
+        if (!File.Exists(_fanCurveStatePath))
+        {
+            return false;
+        }
+
+        using (FileStream stream = File.OpenRead(_fanCurveStatePath))
+        {
+            DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(FanCurveStoreDto));
+            FanCurveStoreDto dto = serializer.ReadObject(stream) as FanCurveStoreDto;
+            if (dto == null)
+            {
+                return false;
+            }
+
+            store = dto.ToDomain();
+            return true;
+        }
+    }
+
+    public void SaveFanCurveStore(FanCurveStore store)
+    {
+        if (store == null)
+        {
+            throw new ArgumentNullException(nameof(store));
+        }
+
+        EnsureBaseDirectory();
+        using (FileStream stream = File.Create(_fanCurveStatePath))
+        {
+            DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(FanCurveStoreDto));
+            serializer.WriteObject(stream, FanCurveStoreDto.FromDomain(store));
+        }
+    }
+
     private void EnsureBaseDirectory()
     {
         Directory.CreateDirectory(_baseDirectory);
@@ -180,6 +221,7 @@ internal sealed class LocalStateStore
         switch (rpm)
         {
             case 0:
+            case 1300:
             case 1500:
             case 2500:
             case 3500:
@@ -195,5 +237,103 @@ internal sealed class LocalStateStore
     private static string FormatFanMinimumPreference(int? rpm)
     {
         return rpm.HasValue ? rpm.Value.ToString(CultureInfo.InvariantCulture) : "None";
+    }
+
+    [DataContract]
+    private sealed class FanCurveStoreDto
+    {
+        [DataMember(Order = 1)]
+        public bool Enabled { get; set; }
+
+        [DataMember(Order = 2)]
+        public FanCurveSetDto Eco { get; set; }
+
+        [DataMember(Order = 3)]
+        public FanCurveSetDto Balanced { get; set; }
+
+        [DataMember(Order = 4)]
+        public FanCurveSetDto Performance { get; set; }
+
+        [DataMember(Order = 5)]
+        public FanCurveSetDto Unleashed { get; set; }
+
+        [DataMember(Order = 6)]
+        public int HysteresisRiseDeltaC { get; set; } = 5;
+
+        [DataMember(Order = 7)]
+        public int HysteresisDropDeltaC { get; set; } = 10;
+
+        public FanCurveStore ToDomain()
+        {
+            return new FanCurveStore(
+                Enabled,
+                (Eco ?? FanCurveSetDto.FromDomain(FanCurveDefaults.CreateDefaultSet(PerformanceMode.Eco))).ToDomain(),
+                (Balanced ?? FanCurveSetDto.FromDomain(FanCurveDefaults.CreateDefaultSet(PerformanceMode.Default))).ToDomain(),
+                (Performance ?? FanCurveSetDto.FromDomain(FanCurveDefaults.CreateDefaultSet(PerformanceMode.Performance))).ToDomain(),
+                (Unleashed ?? FanCurveSetDto.FromDomain(FanCurveDefaults.CreateDefaultSet(PerformanceMode.Extreme))).ToDomain(),
+                HysteresisRiseDeltaC,
+                HysteresisDropDeltaC);
+        }
+
+        public static FanCurveStoreDto FromDomain(FanCurveStore store)
+        {
+            return new FanCurveStoreDto
+            {
+                Enabled = store.Enabled,
+                Eco = FanCurveSetDto.FromDomain(store.Eco),
+                Balanced = FanCurveSetDto.FromDomain(store.Balanced),
+                Performance = FanCurveSetDto.FromDomain(store.Performance),
+                Unleashed = FanCurveSetDto.FromDomain(store.Unleashed),
+                HysteresisRiseDeltaC = store.HysteresisRiseDeltaC,
+                HysteresisDropDeltaC = store.HysteresisDropDeltaC
+            };
+        }
+    }
+
+    [DataContract]
+    private sealed class FanCurveSetDto
+    {
+        [DataMember(Order = 1)]
+        public int[] Cpu { get; set; }
+
+        [DataMember(Order = 2)]
+        public int[] Gpu { get; set; }
+
+        [DataMember(Order = 3)]
+        public int[] Chassis { get; set; }
+
+        [DataMember(Order = 4)]
+        public bool GpuLinked { get; set; }
+
+        public FanCurveSet ToDomain()
+        {
+            return new FanCurveSet(
+                new FanCurveProfile(FanCurveProfile.CpuGpuTemperaturePoints, Cpu ?? FanCurveDefaults.BuildCpuDefault(PerformanceMode.Default).RpmPoints),
+                new FanCurveProfile(FanCurveProfile.CpuGpuTemperaturePoints, Gpu ?? FanCurveDefaults.BuildLinkedGpuProfile(FanCurveDefaults.BuildCpuDefault(PerformanceMode.Default)).RpmPoints),
+                new FanCurveProfile(FanCurveProfile.ChassisTemperaturePoints, Chassis ?? FanCurveDefaults.BuildChassisDefault().RpmPoints),
+                GpuLinked);
+        }
+
+        public static FanCurveSetDto FromDomain(FanCurveSet set)
+        {
+            return new FanCurveSetDto
+            {
+                Cpu = ToArray(set.Cpu),
+                Gpu = ToArray(set.Gpu),
+                Chassis = ToArray(set.Chassis),
+                GpuLinked = set.GpuLinked
+            };
+        }
+
+        private static int[] ToArray(FanCurveProfile profile)
+        {
+            int[] result = new int[profile.RpmPoints.Count];
+            for (int i = 0; i < result.Length; i++)
+            {
+                result[i] = profile.RpmPoints[i];
+            }
+
+            return result;
+        }
     }
 }

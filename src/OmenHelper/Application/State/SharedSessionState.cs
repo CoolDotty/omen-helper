@@ -5,6 +5,7 @@ using HP.Omen.Core.Common.Enums;
 using HP.Omen.Core.Common.PowerControl.Enum;
 using HP.Omen.Core.Model.DataStructure.Modules.FanControl.Enums;
 using HP.Omen.Core.Model.DataStructure.Modules.GraphicsSwitcher.Enums;
+using OmenHelper.Domain.Fan;
 
 namespace OmenHelper.Application.State;
 
@@ -29,9 +30,32 @@ internal sealed class SharedSessionState
     public double? CpuTemperatureC { get; set; }
     public double? GpuTemperatureC { get; set; }
     public double? ChassisTemperatureC { get; set; }
+    public double? AveragedCpuTemperatureC { get; set; }
+    public double? AveragedGpuTemperatureC { get; set; }
+    public double? AveragedChassisTemperatureC { get; set; }
+    public DateTime? PooledTelemetryTimestampUtc { get; set; }
     public string TemperatureSource { get; set; } = string.Empty;
     public bool TemperatureReadSucceeded { get; set; }
     public int? FanMinimumOverrideRpm { get; set; }
+    public FanCurveStore FanCurveStore { get; set; }
+    public bool FanCurveRuntimeEnabled { get; set; }
+    public string ActiveFanCurveMode { get; set; } = string.Empty;
+    public int FanCurveHysteresisRiseDeltaC { get; set; } = 5;
+    public int FanCurveHysteresisDropDeltaC { get; set; } = 10;
+    public FanCurveProfile ActiveCpuCurve { get; set; }
+    public FanCurveProfile ActiveGpuCurve { get; set; }
+    public FanCurveProfile ActiveChassisCurve { get; set; }
+    public bool GpuCurveLinked { get; set; }
+    public int CurveDesiredCpuRpm { get; set; }
+    public int CurveDesiredGpuRpm { get; set; }
+    public int CurveAppliedCpuRpm { get; set; }
+    public int CurveAppliedGpuRpm { get; set; }
+    public bool CurveChassisOverrideUsed { get; set; }
+    public double? CpuHysteresisAnchorTemperatureC { get; set; }
+    public double? GpuHysteresisAnchorTemperatureC { get; set; }
+    public double? ChassisHysteresisAnchorTemperatureC { get; set; }
+    public DateTime? LastCurveWriteTimestampUtc { get; set; }
+    public string LastCurveWriteReason { get; set; } = string.Empty;
     public bool ExtremeUnlocked { get; set; } = true;
     public bool UnleashVisible { get; set; } = true;
     public ThermalModeOnUI ThermalUiType { get; set; }
@@ -117,6 +141,24 @@ internal sealed class SharedSessionState
             CurrentFanRpmSummary = DescribeFanRpm(),
             CurrentFanMinimumRpm = GetConfiguredFanMinimumRpm(),
             FanMinimumOverrideRpm = FanMinimumOverrideRpm,
+            FanCurveRuntimeEnabled = FanCurveRuntimeEnabled,
+            ActiveFanCurveMode = ActiveFanCurveMode,
+            FanCurveHysteresisRiseDeltaC = FanCurveHysteresisRiseDeltaC,
+            FanCurveHysteresisDropDeltaC = FanCurveHysteresisDropDeltaC,
+            ActiveCpuCurve = ActiveCpuCurve,
+            ActiveGpuCurve = ActiveGpuCurve,
+            ActiveChassisCurve = ActiveChassisCurve,
+            GpuCurveLinked = GpuCurveLinked,
+            CurveDesiredCpuRpm = CurveDesiredCpuRpm,
+            CurveDesiredGpuRpm = CurveDesiredGpuRpm,
+            CurveAppliedCpuRpm = CurveAppliedCpuRpm,
+            CurveAppliedGpuRpm = CurveAppliedGpuRpm,
+            CurveChassisOverrideUsed = CurveChassisOverrideUsed,
+            CpuHysteresisAnchorTemperatureC = CpuHysteresisAnchorTemperatureC,
+            GpuHysteresisAnchorTemperatureC = GpuHysteresisAnchorTemperatureC,
+            ChassisHysteresisAnchorTemperatureC = ChassisHysteresisAnchorTemperatureC,
+            LastCurveWriteTimestampUtc = LastCurveWriteTimestampUtc,
+            LastCurveWriteReason = LastCurveWriteReason,
             CurrentGraphicsMode = CurrentGraphicsMode.ToString(),
             CpuFanRpm = CpuFanRpm,
             GpuFanRpm = GpuFanRpm,
@@ -125,6 +167,10 @@ internal sealed class SharedSessionState
             CpuTemperatureC = CpuTemperatureC,
             GpuTemperatureC = GpuTemperatureC,
             ChassisTemperatureC = ChassisTemperatureC,
+            AveragedCpuTemperatureC = AveragedCpuTemperatureC,
+            AveragedGpuTemperatureC = AveragedGpuTemperatureC,
+            AveragedChassisTemperatureC = AveragedChassisTemperatureC,
+            PooledTelemetryTimestampUtc = PooledTelemetryTimestampUtc,
             TemperatureSource = TemperatureSource,
             TemperatureReadSucceeded = TemperatureReadSucceeded,
             GraphicsModeSwitchSupported = GraphicsModeSwitchSupported,

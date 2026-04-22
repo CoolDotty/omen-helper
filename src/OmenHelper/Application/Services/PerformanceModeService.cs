@@ -55,7 +55,9 @@ internal sealed class PerformanceModeService
                 _state.Log("Thermal mode restore after performance mode change failed.");
             }
 
-            bool fanTargetOk = await _fanControl.ApplyFanMinimumBlobAsync("performance mode change").ConfigureAwait(false);
+            bool fanTargetOk = !_state.FanCurveRuntimeEnabled || _state.FanMinimumOverrideRpm.HasValue
+                ? await _fanControl.ApplyFanMinimumBlobAsync("performance mode change").ConfigureAwait(false)
+                : true;
             if (!fanTargetOk)
             {
                 _state.Log("Fan target blob restore after performance mode change failed.");
@@ -84,10 +86,13 @@ internal sealed class PerformanceModeService
             return;
         }
 
-        bool fanTargetOk = await _fanControl.ApplyFanMinimumBlobAsync("thermal mode change").ConfigureAwait(false);
-        if (!fanTargetOk)
+        if (thermalControl != ThermalControl.Max)
         {
-            _state.Log("Fan target blob restore after thermal mode change failed.");
+            bool fanTargetOk = await _fanControl.ApplyCurrentFanTargetAsync("thermal mode change").ConfigureAwait(false);
+            if (!fanTargetOk)
+            {
+                _state.Log("Fan target blob restore after thermal mode change failed.");
+            }
         }
 
         await RefreshPerformanceStatusBlobAsync().ConfigureAwait(false);

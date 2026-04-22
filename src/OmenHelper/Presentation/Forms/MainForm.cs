@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using OmenHelper.Application.Controllers;
 using OmenHelper.Application.State;
+using OmenHelper.Domain.Fan;
 using OmenHelper.Presentation.Controls;
 
 namespace OmenHelper.Presentation.Forms;
@@ -17,8 +18,6 @@ internal sealed class MainForm : Form
     private readonly Button _diagnosticsButton = new Button();
     private DiagnosticsForm _diagnosticsForm;
     private readonly Timer _powerModeTimer = new Timer();
-    private readonly Timer _fanTelemetryTimer = new Timer();
-    private bool _telemetryRefreshInProgress;
 
     public MainForm()
     {
@@ -33,9 +32,6 @@ internal sealed class MainForm : Form
         FormClosing += OnFormClosing;
         _powerModeTimer.Interval = 3000;
         _powerModeTimer.Tick += async (_, __) => await SyncPowerSourceModeAsync();
-
-        _fanTelemetryTimer.Interval = 1000;
-        _fanTelemetryTimer.Tick += async (_, __) => await RefreshTelemetryAsync();
     }
 
     private void InitializeUi()
@@ -48,6 +44,12 @@ internal sealed class MainForm : Form
         _performancePanel.BatteryPreferenceChanged += (_, mode) => _controller.SetBatteryPowerModePreference(mode);
         _performancePanel.PluggedPreferenceChanged += (_, mode) => _controller.SetPluggedInPowerModePreference(mode);
         _performancePanel.PowerModeSelectionsChanged += async (_, __) => await SyncPowerSourceModeAsync();
+        _performancePanel.FanCurveRuntimeEnabledChanged += (_, enabled) => _controller.SetFanCurveRuntimeEnabled(enabled);
+        _performancePanel.GpuCurveLinkedChanged += (_, linked) => _controller.SetFanCurveGpuLinked(linked);
+        _performancePanel.FanCurveHysteresisChanged += async (_, args) => await _controller.SetFanCurveHysteresisAsync(args.RiseDeltaC, args.DropDeltaC);
+        _performancePanel.CpuCurveCommitted += (_, profile) => _controller.SetFanCurveProfile(FanCurveKind.Cpu, profile);
+        _performancePanel.GpuCurveCommitted += (_, profile) => _controller.SetFanCurveProfile(FanCurveKind.Gpu, profile);
+        _performancePanel.ChassisCurveCommitted += (_, profile) => _controller.SetFanCurveProfile(FanCurveKind.Chassis, profile);
 
         _graphicsPanel.RequestGraphicsModeAsync = async (mode, label) => await _controller.SetGraphicsModeAsync(mode);
 
@@ -92,14 +94,12 @@ internal sealed class MainForm : Form
         _controller.Start();
         LoadPowerModePreferencesIntoUi();
         _powerModeTimer.Start();
-        _fanTelemetryTimer.Start();
         _ = SyncPowerSourceModeAsync();
     }
 
     private void OnFormClosing(object sender, FormClosingEventArgs e)
     {
         _powerModeTimer.Stop();
-        _fanTelemetryTimer.Stop();
         _diagnosticsForm?.Close();
         _controller.Dispose();
     }
@@ -146,24 +146,6 @@ internal sealed class MainForm : Form
 
         bool pluggedIn = powerLineStatus == PowerLineStatus.Online;
         await _controller.SyncPowerSourcePerformanceModeAsync(pluggedIn).ConfigureAwait(true);
-    }
-
-    private async Task RefreshTelemetryAsync()
-    {
-        if (_telemetryRefreshInProgress || IsDisposed)
-        {
-            return;
-        }
-
-        _telemetryRefreshInProgress = true;
-        try
-        {
-            await _controller.RefreshHardwareTelemetryAsync().ConfigureAwait(true);
-        }
-        finally
-        {
-            _telemetryRefreshInProgress = false;
-        }
     }
 
 
