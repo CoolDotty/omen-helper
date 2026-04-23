@@ -1,3 +1,7 @@
+# THIS IS A WORK IN PROGRESS.
+# THE WIMI/BIOS INTERFACE WORKS WITH AN OMEN TRANSCEND 14 2025
+# READ THE AI GENERATED SLOP BELOW AT YOUR OWN PERIL.
+
 # Omen Helper
 
 BIOS/WMI-only replacement utility for OMEN performance controls on the OMEN Transcend 14.
