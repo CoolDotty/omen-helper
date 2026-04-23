@@ -192,7 +192,7 @@ internal sealed class OmenBiosClient : IDisposable
     }
 
     // Read small temperature-ish value (observed HP method dtGetTemperature uses commandType=35).
-    // The input byte[1] selects the observed chassis sensor; returns -1 on failure.
+    // The input byte[1] selects the observed chassis sensor; returns the first byte as reported.
     public bool TryGetTemperature(out double temperature)
     {
         temperature = double.NaN;

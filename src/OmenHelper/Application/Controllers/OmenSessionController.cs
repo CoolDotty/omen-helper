@@ -83,7 +83,7 @@ internal sealed class OmenSessionController : IDisposable
             PerformanceModeFirmwareMap.FormatDisplayName(PerformanceMode.Extreme)
         };
         _state.CurrentModeKnown = false;
-        _performanceModeService.LoadRememberedPerformanceMode();
+        _state.CurrentModeIsInferred = false;
         _performanceModeService.LoadPowerModePreferences();
         _fanControlService.LoadFanMinimumPreference();
         _fanControlService.LoadFanCurveStore();

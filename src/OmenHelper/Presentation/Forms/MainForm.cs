@@ -16,8 +16,12 @@ internal sealed class MainForm : Form
     private readonly GraphicsPanel _graphicsPanel = new GraphicsPanel();
     private readonly LogPanel _logPanel = new LogPanel();
     private readonly Button _diagnosticsButton = new Button();
+    private readonly NotifyIcon _trayIcon = new NotifyIcon();
+    private readonly ContextMenuStrip _trayMenu = new ContextMenuStrip();
     private DiagnosticsForm _diagnosticsForm;
     private readonly Timer _powerModeTimer = new Timer();
+    private bool _allowExit;
+    private bool _trayHintShown;
 
     public MainForm()
     {
@@ -27,8 +31,10 @@ internal sealed class MainForm : Form
         Size = new Size(1180, 860);
 
         InitializeUi();
+        InitializeTrayIcon();
 
         Load += OnLoad;
+        Resize += OnResize;
         FormClosing += OnFormClosing;
         _powerModeTimer.Interval = 3000;
         _powerModeTimer.Tick += async (_, __) => await SyncPowerSourceModeAsync();
@@ -62,9 +68,10 @@ internal sealed class MainForm : Form
             Margin = new Padding(0, 0, 0, 12)
         };
 
-        _diagnosticsButton.Text = "Diagnostics";
+        _diagnosticsButton.Text = "Advanced Diagnostics";
         _diagnosticsButton.AutoSize = true;
         _diagnosticsButton.Click += (_, __) => ShowDiagnosticsWindow();
+        _diagnosticsButton.Visible = true;
         topBar.Controls.Add(_diagnosticsButton);
 
         TableLayoutPanel root = new TableLayoutPanel
@@ -94,12 +101,31 @@ internal sealed class MainForm : Form
         _controller.Start();
         LoadPowerModePreferencesIntoUi();
         _powerModeTimer.Start();
+        _trayIcon.Visible = true;
         _ = SyncPowerSourceModeAsync();
+    }
+
+    private void OnResize(object sender, EventArgs e)
+    {
+        if (WindowState == FormWindowState.Minimized)
+        {
+            HideToTray(showBalloonTip: !_trayHintShown);
+        }
     }
 
     private void OnFormClosing(object sender, FormClosingEventArgs e)
     {
+        if (!_allowExit && e.CloseReason == CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            HideToTray(showBalloonTip: !_trayHintShown);
+            return;
+        }
+
         _powerModeTimer.Stop();
+        _trayIcon.Visible = false;
+        _trayIcon.Dispose();
+        _trayMenu.Dispose();
         _diagnosticsForm?.Close();
         _controller.Dispose();
     }
@@ -151,13 +177,77 @@ internal sealed class MainForm : Form
 
     private void ShowDiagnosticsWindow()
     {
+        ShowFromTray();
+
         if (_diagnosticsForm != null && !_diagnosticsForm.IsDisposed)
         {
             _diagnosticsForm.Focus();
             return;
         }
 
-        _diagnosticsForm = new DiagnosticsForm(() => _controller.BuildDiagnosticsReportAsync(), (commandType, input, label, outSize) => _controller.ProbeTemperatureCommandAsync(commandType, input, label, outSize));
+        _diagnosticsForm = new DiagnosticsForm(
+            () => _controller.BuildDiagnosticsReportAsync(),
+            BuildFeatures.DeveloperToolsEnabled
+                ? new Func<int, byte[], string, int, Task<string>>((commandType, input, label, outSize) => _controller.ProbeTemperatureCommandAsync(commandType, input, label, outSize))
+                : null);
         _diagnosticsForm.Show(this);
+    }
+
+    private void InitializeTrayIcon()
+    {
+        ToolStripMenuItem openItem = new ToolStripMenuItem("Open OMEN Helper");
+        openItem.Click += (_, __) => ShowFromTray();
+
+        ToolStripMenuItem diagnosticsItem = new ToolStripMenuItem("Diagnostics");
+        diagnosticsItem.Click += (_, __) => ShowDiagnosticsWindow();
+
+        ToolStripMenuItem exitItem = new ToolStripMenuItem("Exit");
+        exitItem.Click += (_, __) => ExitApplication();
+
+        _trayMenu.Items.Add(openItem);
+        _trayMenu.Items.Add(diagnosticsItem);
+        _trayMenu.Items.Add(new ToolStripSeparator());
+        _trayMenu.Items.Add(exitItem);
+
+        _trayIcon.Text = "OMEN Helper";
+        _trayIcon.Icon = Icon.ExtractAssociatedIcon(System.Windows.Forms.Application.ExecutablePath) ?? SystemIcons.Application;
+        _trayIcon.ContextMenuStrip = _trayMenu;
+        _trayIcon.DoubleClick += (_, __) => ShowFromTray();
+    }
+
+    private void HideToTray(bool showBalloonTip)
+    {
+        if (!Visible && !ShowInTaskbar)
+        {
+            return;
+        }
+
+        Hide();
+        ShowInTaskbar = false;
+
+        if (showBalloonTip)
+        {
+            _trayIcon.ShowBalloonTip(2000, "OMEN Helper", "Still running in the system tray.", ToolTipIcon.Info);
+            _trayHintShown = true;
+        }
+    }
+
+    private void ShowFromTray()
+    {
+        Show();
+        ShowInTaskbar = true;
+        if (WindowState == FormWindowState.Minimized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+
+        Activate();
+        BringToFront();
+    }
+
+    private void ExitApplication()
+    {
+        _allowExit = true;
+        Close();
     }
 }

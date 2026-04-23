@@ -420,7 +420,7 @@ internal sealed class PerformancePanel : UserControl
     {
         string modeText = FormatDisplayedPerformanceMode(state);
         string fanMinimumText = state.Initialized && state.Available ? state.CurrentFanMinimumRpm.ToString("N0") + "RPM" : "<unavailable>";
-        string fanMinimumSuffix = state.FanMinimumOverrideRpm.HasValue ? " (debug override)" : " (mode default)";
+        string fanMinimumSuffix = state.FanMinimumOverrideRpm.HasValue ? " (manual override)" : " (mode default)";
         string fanRpmText = !string.IsNullOrWhiteSpace(state.CurrentFanRpmSummary) ? state.CurrentFanRpmSummary : "<unavailable>";
         string cpuTempText = FormatTemperature(state.CpuTemperatureC);
         string gpuTempText = FormatTemperature(state.GpuTemperatureC);

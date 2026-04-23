@@ -132,7 +132,7 @@ internal sealed class GraphicsPanel : UserControl
 
         if (!success)
         {
-            MessageBox.Show(owner, "Failed to request graphics mode change. Check diagnostics or the log for support flags and the BIOS return code.", "Graphics Mode", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(owner, "Failed to request graphics mode change. Check Advanced Diagnostics or the log for support flags and the BIOS return code.", "Graphics Mode", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 

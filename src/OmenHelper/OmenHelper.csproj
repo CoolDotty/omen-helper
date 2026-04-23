@@ -14,6 +14,7 @@
     <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
     <AssemblyName>OmenHelper</AssemblyName>
     <RootNamespace>OmenHelper</RootNamespace>
+    <BundledDependencyRoot>$(MSBuildThisFileDirectory)bin_check</BundledDependencyRoot>
     <DefaultItemExcludes>$(DefaultItemExcludes);dlldumps\**\*</DefaultItemExcludes>
   </PropertyGroup>
 
@@ -32,42 +33,42 @@
     </Reference>
     <Reference Include="System.Management" />
     <Reference Include="LibreHardwareMonitorLib">
-      <HintPath>bin_check\LibreHardwareMonitorLib.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\LibreHardwareMonitorLib.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="System.Buffers">
-      <HintPath>bin_check\System.Buffers.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\System.Buffers.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="System.Memory">
-      <HintPath>bin_check\System.Memory.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\System.Memory.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="System.Numerics.Vectors">
-      <HintPath>bin_check\System.Numerics.Vectors.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\System.Numerics.Vectors.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="System.Runtime.CompilerServices.Unsafe">
-      <HintPath>bin_check\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="BlackSharp.Core">
-      <HintPath>..\..\bin_temp5\BlackSharp.Core.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\BlackSharp.Core.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="DiskInfoToolkit">
-      <HintPath>..\..\bin_temp5\DiskInfoToolkit.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\DiskInfoToolkit.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="HidSharp">
-      <HintPath>..\..\bin_temp5\HidSharp.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\HidSharp.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="RAMSPDToolkit-NDD">
-      <HintPath>..\..\bin_temp5\RAMSPDToolkit-NDD.dll</HintPath>
+      <HintPath>$(BundledDependencyRoot)\RAMSPDToolkit-NDD.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>

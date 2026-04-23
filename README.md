@@ -14,6 +14,8 @@ The app is a WinForms tool that talks directly to HP BIOS/WMI firmware surfaces 
 - HP SystemOptimizer installed at `C:\Program Files\HP\SystemOptimizer`
 - Administrator privileges when running the app
 
+Bundled third-party DLLs required by the app are checked in under `src/OmenHelper/bin_check/`. The only external install path the project expects by default is `HpSystemOptimizerRoot`.
+
 ### Clone and open
 
 1. Clone the repository.
@@ -72,3 +74,4 @@ Directory.Build.props
 - This project intentionally avoids HP background named-pipe support.
 - Performance mode write paths are conservative and should only be exposed when confirmed by BIOS/WMI behavior.
 - Graphics mode support is gated by BIOS system design data readback.
+- The normal diagnostics window is safe for end users. Raw firmware probe buttons are hidden in non-Debug builds unless `OMENHELPER_ENABLE_DEVTOOLS=1` is set in the environment.

@@ -95,7 +95,21 @@ internal static class FanCurveEvaluator
             return appliedRpm;
         }
 
-        if (averagedTemperatureC >= anchorTemperatureC.Value + riseDeltaC || averagedTemperatureC <= anchorTemperatureC.Value - dropDeltaC)
+        if (desiredRpm > appliedRpm)
+        {
+            anchorTemperatureC = averagedTemperatureC;
+            appliedRpm = desiredRpm;
+            return appliedRpm;
+        }
+
+        if (averagedTemperatureC <= anchorTemperatureC.Value - dropDeltaC)
+        {
+            anchorTemperatureC = averagedTemperatureC;
+            appliedRpm = desiredRpm;
+            return appliedRpm;
+        }
+
+        if (averagedTemperatureC >= anchorTemperatureC.Value + riseDeltaC)
         {
             anchorTemperatureC = averagedTemperatureC;
             appliedRpm = desiredRpm;

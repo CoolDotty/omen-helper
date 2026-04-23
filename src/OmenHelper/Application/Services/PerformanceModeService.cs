@@ -123,7 +123,14 @@ internal sealed class PerformanceModeService
 
     public async Task SyncPowerSourcePerformanceModeAsync(bool pluggedIn)
     {
-        bool sourceChanged = !_state.LastKnownPluggedIn.HasValue || _state.LastKnownPluggedIn.Value != pluggedIn;
+        if (!_state.LastKnownPluggedIn.HasValue)
+        {
+            _state.LastKnownPluggedIn = pluggedIn;
+            _state.Log("Initial power source detected as " + (pluggedIn ? "AC" : "battery") + "; not auto-switching performance mode on startup.");
+            return;
+        }
+
+        bool sourceChanged = _state.LastKnownPluggedIn.Value != pluggedIn;
         _state.LastKnownPluggedIn = pluggedIn;
 
         // Only react when the detected power source actually changes.
