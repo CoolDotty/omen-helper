@@ -1,5 +1,7 @@
 # THIS IS A WORK IN PROGRESS.
 # THE WIMI/BIOS INTERFACE WORKS WITH AN OMEN TRANSCEND 14 2025
+<img width="1153" height="840" alt="image" src="https://github.com/user-attachments/assets/48e119d1-8979-44f2-ae81-2ac4ee67be15" />
+
 # READ THE AI GENERATED SLOP BELOW AT YOUR OWN PERIL.
 
 # Omen Helper
